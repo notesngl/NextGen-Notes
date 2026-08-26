@@ -37,7 +37,7 @@ export default function AdminPanel() {
 
     const fileName = `${Date.now()}-${file.name}`
     const { error: uploadError } = await supabase.storage
-      .from('notes-pdfs')
+      .from('notes-pdf')
       .upload(fileName, file)
 
     if (uploadError) {
