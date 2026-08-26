@@ -6,6 +6,12 @@ import React, { useState, useMemo } from "react";
   torn-edge pages, a teacher's red-ink "verified" stamp as the signature
   element (Andy is a teacher — the stamp is literally his mark of approval).
   Palette: warm paper cream, notebook-rule blue, ink navy, stamp red, chalk gold.
+
+  NEW: School notes are organised the way a real school subject file is —
+  Class → Subject → Chapter. Only chapters that actually have a note added
+  to PRODUCTS below will show up as buyable; every other chapter renders as
+  an empty "folder" labelled Available soon, so students can always see the
+  full syllabus map while you fill it in over time.
 */
 
 const FONTS = `
@@ -21,8 +27,15 @@ const COLORS = {
   inkSoft: "#5B6478",
   gold: "#C79A2E",
   stampRed: "#B23A2E",
+  folder: "#E7D9AE",
+  folderLine: "#B99B57",
 };
 
+// ─────────────────────────────────────────────────────────────────────────
+// PRODUCTS — every actual note pack you sell lives here. Add a new one any
+// time, then reference its id from the CHAPTER_MAP or SCHOOL_CATALOG below
+// (or from COMPETITIVE_CATALOG) so it slots into the right folder.
+// ─────────────────────────────────────────────────────────────────────────
 const PRODUCTS = [
   {
     id: "sch-gk-1",
@@ -35,6 +48,16 @@ const PRODUCTS = [
     grade: "Class 3–4",
   },
   {
+    id: "sch-gk-2",
+    section: "School",
+    subject: "General Knowledge",
+    title: "Sports & Games GK Booster",
+    desc: "A focused set pulled from the 500-question GK bank, sports edition.",
+    pages: 16,
+    price: 25,
+    grade: "Class 3–4",
+  },
+  {
     id: "sch-math-1",
     section: "School",
     subject: "Mathematics",
@@ -42,24 +65,24 @@ const PRODUCTS = [
     desc: "Step-by-step worked fraction problems, built for daily tuition practice.",
     pages: 22,
     price: 39,
-    grade: "Class 5–6",
+    grade: "Class 6",
   },
   {
     id: "sch-math-2",
     section: "School",
     subject: "Mathematics",
-    title: "Class 8 Algebra Foundations",
-    desc: "Digitally typed worked examples from linear equations to basic factorisation.",
+    title: "Linear Equations — Foundations",
+    desc: "Digitally typed worked examples, from simple linear equations to word problems.",
     pages: 30,
     price: 59,
     grade: "Class 8",
   },
   {
-    id: "sch-sci-1",
+    id: "sch-sci-quick",
     section: "School",
     subject: "Science",
-    title: "Class 6–8 Science Quick Notes",
-    desc: "Diagram-heavy revision notes — physics, chemistry, biology basics.",
+    title: "Science Quick Revision Notes",
+    desc: "Diagram-heavy revision notes spanning physics, chemistry & biology basics — handy across the whole year, not tied to one chapter.",
     pages: 40,
     price: 55,
     grade: "Class 6–8",
@@ -95,7 +118,7 @@ const PRODUCTS = [
   {
     id: "comp-ssc-1",
     section: "Competitive",
-    subject: "SSC / Railway",
+    subject: "General Awareness",
     title: "General Awareness Capsule",
     desc: "Digitally typed current-affairs + static GK capsule for SSC & Railway exams.",
     pages: 64,
@@ -105,7 +128,7 @@ const PRODUCTS = [
   {
     id: "comp-jssc-1",
     section: "Competitive",
-    subject: "Jharkhand Exams",
+    subject: "Jharkhand GK",
     title: "Jharkhand GK Digital Notes",
     desc: "History, geography, culture and current schemes of Jharkhand state.",
     pages: 52,
@@ -122,17 +145,194 @@ const PRODUCTS = [
     price: 69,
     grade: "Competitive",
   },
+];
+
+const productById = (id) => PRODUCTS.find((p) => p.id === id) || null;
+
+// ─────────────────────────────────────────────────────────────────────────
+// SCHOOL_CATALOG — the folder tree. Every class → every subject → every
+// chapter (old-NCERT chapter names). "note" holds a PRODUCTS id if that
+// chapter has been written up yet; leave it null and the UI shows the
+// chapter as an empty "Available soon" folder automatically.
+// ─────────────────────────────────────────────────────────────────────────
+const chap = (title, note = null) => ({ title, note });
+
+const SCHOOL_CATALOG = [
   {
-    id: "sch-gk-2",
-    section: "School",
-    subject: "General Knowledge",
-    title: "Sports & Games GK Booster",
-    desc: "A focused set pulled from the 500-question GK bank, sports edition.",
-    pages: 16,
-    price: 25,
-    grade: "Class 3–4",
+    id: "class3-4",
+    label: "Class 3–4",
+    subjects: [
+      {
+        id: "gk",
+        label: "General Knowledge",
+        // flat subject — no chapter split, notes sit directly in the subject
+        flatNotes: ["sch-gk-1", "sch-gk-2"],
+      },
+    ],
+  },
+  {
+    id: "class6",
+    label: "Class 6",
+    subjects: [
+      {
+        id: "maths",
+        label: "Mathematics",
+        chapters: [
+          chap("Knowing Our Numbers"),
+          chap("Whole Numbers"),
+          chap("Playing with Numbers"),
+          chap("Basic Geometrical Ideas"),
+          chap("Understanding Elementary Shapes"),
+          chap("Integers"),
+          chap("Fractions", "sch-math-1"),
+          chap("Decimals"),
+          chap("Data Handling"),
+          chap("Mensuration"),
+          chap("Algebra"),
+          chap("Ratio and Proportion"),
+          chap("Symmetry"),
+          chap("Practical Geometry"),
+        ],
+      },
+      {
+        id: "science",
+        label: "Science",
+        pinnedNote: "sch-sci-quick",
+        chapters: [
+          chap("Food: Where Does It Come From?"),
+          chap("Components of Food"),
+          chap("Fibre to Fabric"),
+          chap("Sorting Materials into Groups"),
+          chap("Separation of Substances"),
+          chap("Changes Around Us"),
+          chap("Getting to Know Plants"),
+          chap("Body Movements"),
+          chap("The Living Organisms and Their Surroundings"),
+          chap("Motion and Measurement of Distances"),
+          chap("Light, Shadows and Reflections"),
+          chap("Electricity and Circuits"),
+          chap("Fun with Magnets"),
+          chap("Water"),
+          chap("Air Around Us"),
+          chap("Garbage In, Garbage Out"),
+        ],
+      },
+    ],
+  },
+  {
+    id: "class7",
+    label: "Class 7",
+    subjects: [
+      {
+        id: "maths",
+        label: "Mathematics",
+        chapters: [
+          chap("Integers"),
+          chap("Fractions and Decimals"),
+          chap("Data Handling"),
+          chap("Simple Equations"),
+          chap("Lines and Angles"),
+          chap("The Triangle and its Properties"),
+          chap("Congruence of Triangles"),
+          chap("Comparing Quantities"),
+          chap("Rational Numbers"),
+          chap("Practical Geometry"),
+          chap("Perimeter and Area"),
+          chap("Algebraic Expressions"),
+          chap("Exponents and Powers"),
+          chap("Symmetry"),
+          chap("Visualising Solid Shapes"),
+        ],
+      },
+      {
+        id: "science",
+        label: "Science",
+        pinnedNote: "sch-sci-quick",
+        chapters: [
+          chap("Nutrition in Plants"),
+          chap("Nutrition in Animals"),
+          chap("Fibre to Fabric"),
+          chap("Heat"),
+          chap("Acids, Bases and Salts"),
+          chap("Physical and Chemical Changes"),
+          chap("Weather, Climate and Adaptations of Animals to Climate"),
+          chap("Winds, Storms and Cyclones"),
+          chap("Soil"),
+          chap("Respiration in Organisms"),
+          chap("Transportation in Animals and Plants"),
+          chap("Reproduction in Plants"),
+          chap("Motion and Time"),
+          chap("Electric Current and its Effects"),
+          chap("Light"),
+          chap("Water: A Precious Resource"),
+          chap("Forests: Our Lifeline"),
+          chap("Wastewater Story"),
+        ],
+      },
+    ],
+  },
+  {
+    id: "class8",
+    label: "Class 8",
+    subjects: [
+      {
+        id: "maths",
+        label: "Mathematics",
+        chapters: [
+          chap("Rational Numbers"),
+          chap("Linear Equations in One Variable", "sch-math-2"),
+          chap("Understanding Quadrilaterals"),
+          chap("Practical Geometry"),
+          chap("Data Handling"),
+          chap("Squares and Square Roots"),
+          chap("Cubes and Cube Roots"),
+          chap("Comparing Quantities"),
+          chap("Algebraic Expressions and Identities"),
+          chap("Visualising Solid Shapes"),
+          chap("Mensuration"),
+          chap("Exponents and Powers"),
+          chap("Direct and Inverse Proportions"),
+          chap("Factorisation"),
+          chap("Introduction to Graphs"),
+          chap("Playing with Numbers"),
+        ],
+      },
+      {
+        id: "science",
+        label: "Science",
+        pinnedNote: "sch-sci-quick",
+        chapters: [
+          chap("Crop Production and Management"),
+          chap("Microorganisms: Friend and Foe"),
+          chap("Synthetic Fibres and Plastics"),
+          chap("Materials: Metals and Non-Metals"),
+          chap("Coal and Petroleum"),
+          chap("Combustion and Flame"),
+          chap("Conservation of Plants and Animals"),
+          chap("Cell — Structure and Functions"),
+          chap("Reproduction in Animals"),
+          chap("Reaching the Age of Adolescence"),
+          chap("Force and Pressure"),
+          chap("Friction"),
+          chap("Sound"),
+          chap("Chemical Effects of Electric Current"),
+          chap("Some Natural Phenomena"),
+          chap("Light"),
+          chap("Stars and the Solar System"),
+          chap("Pollution of Air and Water"),
+        ],
+      },
+    ],
   },
 ];
+
+// Competitive stays a flat, subject-grouped list (not chapter-based —
+// these exams don't follow one fixed textbook).
+const COMPETITIVE_PRODUCTS = PRODUCTS.filter((p) => p.section === "Competitive");
+
+// ─────────────────────────────────────────────────────────────────────────
+// Small shared UI atoms
+// ─────────────────────────────────────────────────────────────────────────
 
 function Stamp({ size = 84 }) {
   return (
@@ -215,18 +415,222 @@ function TornEdge({ flip = false }) {
   );
 }
 
+// Breadcrumb trail for the School folder tree
+function Crumbs({ items, onJump }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 6,
+        marginBottom: 18,
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 12.5,
+      }}
+    >
+      {items.map((it, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <span style={{ color: COLORS.inkSoft }}>/</span>}
+          {i === items.length - 1 ? (
+            <span style={{ color: COLORS.margin, fontWeight: 700 }}>{it.label}</span>
+          ) : (
+            <button
+              onClick={() => onJump(i)}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                color: COLORS.ink,
+                textDecoration: "underline",
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 12.5,
+              }}
+            >
+              {it.label}
+            </button>
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// A folder tile — used for Class and Subject levels, and for empty chapters
+function FolderTile({ label, meta, onClick, dashed = false, accent = false }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={!onClick}
+      style={{
+        textAlign: "left",
+        background: dashed ? "transparent" : COLORS.folder,
+        border: dashed ? `1.5px dashed ${COLORS.inkSoft}77` : `1.5px solid ${COLORS.folderLine}`,
+        borderRadius: 8,
+        padding: "16px 16px 14px",
+        cursor: onClick ? "pointer" : "default",
+        fontFamily: "'Work Sans', sans-serif",
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        minHeight: 92,
+        position: "relative",
+        opacity: dashed ? 0.75 : 1,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 18 }} aria-hidden="true">
+          {dashed ? "📁" : "🗂️"}
+        </span>
+        <span
+          style={{
+            fontFamily: "'Kalam', cursive",
+            fontWeight: 700,
+            fontSize: 16.5,
+            color: dashed ? COLORS.inkSoft : COLORS.ink,
+          }}
+        >
+          {label}
+        </span>
+      </div>
+      <span
+        style={{
+          fontSize: 12,
+          color: dashed ? COLORS.inkSoft : COLORS.inkSoft,
+          fontFamily: "'JetBrains Mono', monospace",
+        }}
+      >
+        {meta}
+      </span>
+      {accent && (
+        <span
+          style={{
+            position: "absolute",
+            top: 10,
+            right: 10,
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: COLORS.margin,
+          }}
+          aria-hidden="true"
+        />
+      )}
+    </button>
+  );
+}
+
+// A compact note card — used for chapters / items that DO have a product
+function NoteCard({ product, inCart, onAdd, onRemove, onPreview, pinned = false }) {
+  return (
+    <div
+      style={{
+        background: COLORS.paper,
+        border: `1.5px solid ${pinned ? COLORS.gold : COLORS.paperDark}`,
+        borderRadius: 8,
+        padding: "14px 14px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        position: "relative",
+      }}
+    >
+      {pinned && (
+        <span
+          style={{
+            position: "absolute",
+            top: -9,
+            left: 12,
+            background: COLORS.gold,
+            color: COLORS.paper,
+            fontSize: 10.5,
+            fontWeight: 700,
+            padding: "2px 8px",
+            borderRadius: 999,
+            fontFamily: "'JetBrains Mono', monospace",
+            letterSpacing: "0.04em",
+          }}
+        >
+          FULL SYLLABUS
+        </span>
+      )}
+      <p
+        style={{
+          fontFamily: "'Kalam', cursive",
+          fontWeight: 700,
+          fontSize: 16.5,
+          margin: 0,
+          color: COLORS.ink,
+          lineHeight: 1.25,
+        }}
+      >
+        {product.title}
+      </p>
+      <p style={{ fontSize: 12.5, color: COLORS.inkSoft, margin: 0 }}>
+        {product.pages} pages · PDF
+      </p>
+      {product.preview && (
+        <button
+          onClick={() => onPreview(product.id)}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            color: COLORS.margin,
+            fontSize: 12,
+            fontWeight: 600,
+            textDecoration: "underline",
+            cursor: "pointer",
+            alignSelf: "flex-start",
+          }}
+        >
+          Preview sample pages →
+        </button>
+      )}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4 }}>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16.5, fontWeight: 600 }}>
+          ₹{product.price}
+        </span>
+        <button
+          onClick={() => (inCart ? onRemove(product.id) : onAdd(product.id))}
+          style={{
+            background: inCart ? COLORS.paperDark : COLORS.ink,
+            color: inCart ? COLORS.ink : COLORS.paper,
+            border: inCart ? `1px solid ${COLORS.inkSoft}55` : "none",
+            borderRadius: 6,
+            padding: "7px 13px",
+            fontSize: 12.5,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          {inCart ? "Added ✓" : "Add to cart"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Main app
+// ─────────────────────────────────────────────────────────────────────────
+
 export default function NextGenNotes() {
-  const [tab, setTab] = useState("School");
+  const [tab, setTab] = useState("School"); // School | Competitive
   const [cart, setCart] = useState([]);
   const [view, setView] = useState("store"); // store | checkout | delivered
   const [previewId, setPreviewId] = useState(null);
   const [contactMethod, setContactMethod] = useState("whatsapp");
   const [contactValue, setContactValue] = useState("");
 
-  const filtered = useMemo(() => PRODUCTS.filter((p) => p.section === tab), [tab]);
+  // School folder navigation: null → class list; classId set → subject list;
+  // classId + subjectId set → chapter list
+  const [classId, setClassId] = useState(null);
+  const [subjectId, setSubjectId] = useState(null);
 
   const total = cart.reduce((sum, id) => {
-    const p = PRODUCTS.find((x) => x.id === id);
+    const p = productById(id);
     return sum + (p ? p.price : 0);
   }, 0);
 
@@ -236,548 +640,24 @@ export default function NextGenNotes() {
   function removeFromCart(id) {
     setCart((c) => c.filter((x) => x !== id));
   }
+  function goSchoolRoot() {
+    setClassId(null);
+    setSubjectId(null);
+  }
+  function selectTab(t) {
+    setTab(t);
+    goSchoolRoot();
+  }
 
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: COLORS.paperDark,
-        fontFamily: "'Work Sans', sans-serif",
-        color: COLORS.ink,
-      }}
-    >
-      <style>{FONTS}</style>
-
-      {/* Header */}
-      <header
-        style={{
-          background: COLORS.ink,
-          color: COLORS.paper,
-          padding: "18px 24px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          position: "sticky",
-          top: 0,
-          zIndex: 20,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <span
-            style={{
-              fontFamily: "'Kalam', cursive",
-              fontWeight: 700,
-              fontSize: 26,
-              color: COLORS.gold,
-            }}
-          >
-            NextGen
-          </span>
-          <span style={{ fontSize: 15, letterSpacing: "0.14em", opacity: 0.8 }}>NOTES</span>
-        </div>
-        <button
-          onClick={() => setView(view === "store" ? "checkout" : "store")}
-          style={{
-            background: "transparent",
-            border: `1.5px solid ${COLORS.paper}66`,
-            color: COLORS.paper,
-            borderRadius: 6,
-            padding: "8px 14px",
-            fontSize: 14,
-            fontWeight: 500,
-            cursor: "pointer",
-            fontFamily: "'Work Sans', sans-serif",
-          }}
-        >
-          {view === "store" ? `Cart (${cart.length})` : "← Back to store"}
-        </button>
-      </header>
-
-      {view === "store" && (
-        <>
-          {/* Hero */}
-          <section
-            style={{
-              padding: "56px 24px 40px",
-              maxWidth: 980,
-              margin: "0 auto",
-              display: "flex",
-              gap: 40,
-              flexWrap: "wrap",
-              alignItems: "center",
-            }}
-          >
-            <div style={{ flex: "1 1 380px" }}>
-              <p
-                style={{
-                  color: COLORS.margin,
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: 12.5,
-                  letterSpacing: "0.12em",
-                  textTransform: "uppercase",
-                  marginBottom: 10,
-                }}
-              >
-                From a teacher's own notebook
-              </p>
-              <h1
-                style={{
-                  fontFamily: "'Kalam', cursive",
-                  fontWeight: 700,
-                  fontSize: "clamp(34px, 5vw, 52px)",
-                  lineHeight: 1.15,
-                  margin: "0 0 16px",
-                  color: COLORS.ink,
-                }}
-              >
-                Notes worth copying down twice.
-              </h1>
-              <p style={{ fontSize: 16.5, color: COLORS.inkSoft, lineHeight: 1.6, maxWidth: 480 }}>
-                Handwritten, exam-ready notes for school subjects and competitive exams —
-                written the way a real tuition teacher explains it, not a textbook.
-              </p>
-              <div style={{ display: "flex", gap: 12, marginTop: 26, flexWrap: "wrap" }}>
-                {["School", "Competitive"].map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setTab(t)}
-                    style={{
-                      background: tab === t ? COLORS.margin : "transparent",
-                      color: tab === t ? COLORS.paper : COLORS.ink,
-                      border: `1.5px solid ${COLORS.margin}`,
-                      borderRadius: 999,
-                      padding: "9px 20px",
-                      fontSize: 14.5,
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      fontFamily: "'Work Sans', sans-serif",
-                    }}
-                  >
-                    {t} Notes
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 16 }}>
-              <Stamp size={110} />
-            </div>
-          </section>
-
-          {/* Product grid */}
-          <section style={{ maxWidth: 980, margin: "0 auto", padding: "10px 24px 70px" }}>
-            <h2
-              style={{
-                fontFamily: "'Kalam', cursive",
-                fontSize: 24,
-                color: COLORS.ink,
-                marginBottom: 18,
-              }}
-            >
-              {tab} Notes
-            </h2>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
-                gap: 22,
-              }}
-            >
-              {filtered.map((p) => {
-                const inCart = cart.includes(p.id);
-                return (
-                  <div key={p.id} style={{ display: "flex", flexDirection: "column" }}>
-                    <RuledCard style={{ padding: "18px 16px 16px" }}>
-                      <p
-                        style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontSize: 11,
-                          color: COLORS.margin,
-                          textTransform: "uppercase",
-                          letterSpacing: "0.08em",
-                          marginBottom: 6,
-                        }}
-                      >
-                        {p.subject} · {p.grade}
-                      </p>
-                      <h3
-                        style={{
-                          fontFamily: "'Kalam', cursive",
-                          fontSize: 20,
-                          fontWeight: 700,
-                          margin: "0 0 8px",
-                          color: COLORS.ink,
-                          lineHeight: 1.25,
-                        }}
-                      >
-                        {p.title}
-                      </h3>
-                      <p style={{ fontSize: 13.5, color: COLORS.inkSoft, lineHeight: 1.5, minHeight: 54 }}>
-                        {p.desc}
-                      </p>
-                      <p style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 4 }}>
-                        {p.pages} pages · PDF
-                      </p>
-                      {p.preview && (
-                        <button
-                          onClick={() => setPreviewId(p.id)}
-                          style={{
-                            background: "none",
-                            border: "none",
-                            padding: 0,
-                            marginBottom: 10,
-                            color: COLORS.margin,
-                            fontSize: 12.5,
-                            fontWeight: 600,
-                            textDecoration: "underline",
-                            cursor: "pointer",
-                            display: "inline-block",
-                          }}
-                        >
-                          Preview sample pages →
-                        </button>
-                      )}
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          marginTop: 8,
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontFamily: "'JetBrains Mono', monospace",
-                            fontSize: 18,
-                            fontWeight: 600,
-                            color: COLORS.ink,
-                          }}
-                        >
-                          ₹{p.price}
-                        </span>
-                        <button
-                          onClick={() => (inCart ? removeFromCart(p.id) : addToCart(p.id))}
-                          style={{
-                            background: inCart ? COLORS.paperDark : COLORS.ink,
-                            color: inCart ? COLORS.ink : COLORS.paper,
-                            border: inCart ? `1px solid ${COLORS.inkSoft}55` : "none",
-                            borderRadius: 6,
-                            padding: "8px 14px",
-                            fontSize: 13,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                          }}
-                        >
-                          {inCart ? "Added ✓" : "Add to cart"}
-                        </button>
-                      </div>
-                    </RuledCard>
-                    <TornEdge />
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        </>
-      )}
-
-      {previewId && (() => {
-        const p = PRODUCTS.find((x) => x.id === previewId);
-        if (!p) return null;
-        return (
-          <div
-            onClick={() => setPreviewId(null)}
-            style={{
-              position: "fixed",
-              inset: 0,
-              background: "rgba(38,50,74,0.55)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 50,
-              padding: 20,
-            }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                background: COLORS.paper,
-                borderRadius: 8,
-                maxWidth: 460,
-                width: "100%",
-                maxHeight: "85vh",
-                overflowY: "auto",
-                boxShadow: "0 24px 60px -20px rgba(0,0,0,0.4)",
-                position: "relative",
-              }}
-            >
-              <div
-                style={{
-                  padding: "16px 20px",
-                  borderBottom: `1px solid ${COLORS.paperDark}`,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  position: "sticky",
-                  top: 0,
-                  background: COLORS.paper,
-                }}
-              >
-                <div>
-                  <p style={{ fontFamily: "'Kalam', cursive", fontSize: 18, fontWeight: 700, margin: 0 }}>
-                    {p.title}
-                  </p>
-                  <p style={{ fontSize: 11.5, color: COLORS.inkSoft, margin: "2px 0 0" }}>
-                    Preview — page 1 of {p.pages}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setPreviewId(null)}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    fontSize: 20,
-                    color: COLORS.inkSoft,
-                    cursor: "pointer",
-                    lineHeight: 1,
-                  }}
-                  aria-label="Close preview"
-                >
-                  ×
-                </button>
-              </div>
-              <RuledCard style={{ margin: 18, padding: "16px 14px" }}>
-                {p.preview.map((line, i) => (
-                  <p
-                    key={i}
-                    style={{
-                      fontFamily: "'Kalam', cursive",
-                      fontSize: 15.5,
-                      margin: "3px 0",
-                      color: COLORS.ink,
-                      minHeight: line === "" ? 8 : undefined,
-                    }}
-                  >
-                    {line || "\u00A0"}
-                  </p>
-                ))}
-              </RuledCard>
-              <div
-                style={{
-                  padding: "0 20px 20px",
-                  textAlign: "center",
-                }}
-              >
-                <p style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 12 }}>
-                  This is a free sample — the full {p.pages}-page PDF unlocks after purchase.
-                </p>
-                <button
-                  onClick={() => {
-                    addToCart(p.id);
-                    setPreviewId(null);
-                  }}
-                  style={{
-                    background: COLORS.margin,
-                    color: COLORS.paper,
-                    border: "none",
-                    borderRadius: 6,
-                    padding: "10px 22px",
-                    fontSize: 14,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    fontFamily: "'Kalam', cursive",
-                  }}
-                >
-                  Add to cart — ₹{p.price}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {view === "checkout" && (
-        <section style={{ maxWidth: 640, margin: "0 auto", padding: "48px 24px 80px" }}>
-          <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 28, marginBottom: 6 }}>
-            Your order
-          </h2>
-          {cart.length === 0 ? (
-            <p style={{ color: COLORS.inkSoft }}>Your cart is empty. Go back and pick a few notes.</p>
-          ) : (
-            <>
-              <RuledCard style={{ padding: "18px 16px", marginBottom: 24 }}>
-                {cart.map((id) => {
-                  const p = PRODUCTS.find((x) => x.id === id);
-                  return (
-                    <div
-                      key={id}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        padding: "8px 0",
-                        borderBottom: `1px dashed ${COLORS.rule}88`,
-                      }}
-                    >
-                      <div>
-                        <p style={{ fontWeight: 600, fontSize: 14.5 }}>{p.title}</p>
-                        <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>{p.subject}</p>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15 }}>
-                          ₹{p.price}
-                        </span>
-                        <button
-                          onClick={() => removeFromCart(id)}
-                          style={{
-                            background: "none",
-                            border: "none",
-                            color: COLORS.margin,
-                            fontSize: 12.5,
-                            cursor: "pointer",
-                            textDecoration: "underline",
-                          }}
-                        >
-                          remove
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    paddingTop: 14,
-                    fontWeight: 700,
-                    fontSize: 16,
-                  }}
-                >
-                  <span>Total</span>
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>₹{total}</span>
-                </div>
-              </RuledCard>
-
-              <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, marginBottom: 8 }}>
-                Where should we send your notes?
-              </h3>
-              <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 14 }}>
-                After payment, your PDFs are delivered by hand — via WhatsApp or Telegram.
-              </p>
-              <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-                {["whatsapp", "telegram"].map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setContactMethod(m)}
-                    style={{
-                      flex: 1,
-                      background: contactMethod === m ? COLORS.ink : "transparent",
-                      color: contactMethod === m ? COLORS.paper : COLORS.ink,
-                      border: `1.5px solid ${COLORS.ink}`,
-                      borderRadius: 6,
-                      padding: "10px 0",
-                      fontWeight: 600,
-                      fontSize: 14,
-                      cursor: "pointer",
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-              <input
-                value={contactValue}
-                onChange={(e) => setContactValue(e.target.value)}
-                placeholder={contactMethod === "whatsapp" ? "Your WhatsApp number" : "Your Telegram username"}
-                style={{
-                  width: "100%",
-                  padding: "11px 12px",
-                  borderRadius: 6,
-                  border: `1.5px solid ${COLORS.rule}`,
-                  fontSize: 14.5,
-                  marginBottom: 20,
-                  fontFamily: "'Work Sans', sans-serif",
-                  boxSizing: "border-box",
-                }}
-              />
-
-              <button
-                disabled={!contactValue.trim()}
-                onClick={() => setView("delivered")}
-                style={{
-                  width: "100%",
-                  background: contactValue.trim() ? COLORS.margin : `${COLORS.margin}66`,
-                  color: COLORS.paper,
-                  border: "none",
-                  borderRadius: 8,
-                  padding: "14px 0",
-                  fontSize: 16,
-                  fontWeight: 700,
-                  cursor: contactValue.trim() ? "pointer" : "not-allowed",
-                  fontFamily: "'Kalam', cursive",
-                }}
-              >
-                Pay ₹{total} & confirm order
-              </button>
-              <p style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 10, textAlign: "center" }}>
-                Demo checkout — real payment (UPI/Razorpay) connects here once the site is live.
-              </p>
-            </>
-          )}
-        </section>
-      )}
-
-      {view === "delivered" && (
-        <section
-          style={{
-            maxWidth: 520,
-            margin: "0 auto",
-            padding: "70px 24px",
-            textAlign: "center",
-          }}
-        >
-          <Stamp size={100} />
-          <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 26, margin: "20px 0 8px" }}>
-            Order confirmed!
-          </h2>
-          <p style={{ color: COLORS.inkSoft, fontSize: 14.5, lineHeight: 1.6 }}>
-            We'll send your notes to your {contactMethod === "whatsapp" ? "WhatsApp" : "Telegram"}{" "}
-            ({contactValue}) shortly after payment is verified.
-          </p>
-          <button
-            onClick={() => {
-              setCart([]);
-              setContactValue("");
-              setView("store");
-            }}
-            style={{
-              marginTop: 24,
-              background: COLORS.ink,
-              color: COLORS.paper,
-              border: "none",
-              borderRadius: 8,
-              padding: "12px 22px",
-              fontSize: 14.5,
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            Back to store
-          </button>
-        </section>
-      )}
-
-      <footer
-        style={{
-          background: COLORS.ink,
-          color: `${COLORS.paper}bb`,
-          padding: "22px 24px",
-          textAlign: "center",
-          fontSize: 12.5,
-        }}
-      >
-        NextGen Notes — digitally made by a real teacher, in Sahibganj, Jharkhand.
-      </footer>
-    </div>
+  const currentClass = useMemo(
+    () => SCHOOL_CATALOG.find((c) => c.id === classId) || null,
+    [classId]
   );
-}
+  const currentSubject = useMemo(
+    () => (currentClass ? currentClass.subjects.find((s) => s.id === subjectId) : null),
+    [currentClass, subjectId]
+  );
+
+  function subjectStats(subject) {
+    if (subject.flatNotes) {
+      return { total: subject.fla
