@@ -45,7 +45,7 @@ export default function AdminPanel({ onBack }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [pages, setPages] = useState("");
-  const [file, setFile] = useState(null);
+  const [driveLink, setDriveLink] = useState("");
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
   const [existingNotes, setExistingNotes] = useState([]);
@@ -75,31 +75,23 @@ export default function AdminPanel({ onBack }) {
   async function handleUpload(e) {
     e.preventDefault();
     setMessage("");
-    if (!key || !medium || !subject || !chapter || !title.trim() || !file) {
-      setMessage("Sab fields aur PDF file zaroori hain.");
+    if (!key || !medium || !subject || !chapter || !title.trim() || !driveLink.trim()) {
+      setMessage("Sab fields aur Google Drive link zaroori hain.");
       return;
     }
     setUploading(true);
     try {
-      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const path = `${category}/${key}/${subject}/${Date.now()}-${safeName}`;
-      const { error: uploadErr } = await supabase.storage.from("notes-pdfs").upload(path, file);
-      if (uploadErr) throw uploadErr;
-
-      const { data: urlData } = supabase.storage.from("notes-pdfs").getPublicUrl(path);
-      const fileUrl = urlData.publicUrl;
-
       const { error: insertErr } = await supabase.from("notes").insert({
         category, key, medium, subject, chapter,
         title: title.trim(),
         description: description.trim(),
         pages: pages ? parseInt(pages, 10) : null,
-        file_url: fileUrl,
+        file_url: driveLink.trim(),
       });
       if (insertErr) throw insertErr;
 
-      setMessage("Upload ho gaya ✓");
-      setTitle(""); setDescription(""); setPages(""); setFile(null); setChapter("");
+      setMessage("Note add ho gaya ✓");
+      setTitle(""); setDescription(""); setPages(""); setDriveLink(""); setChapter("");
       loadExisting();
     } catch (err) {
       setMessage("Error: " + err.message);
@@ -166,16 +158,24 @@ export default function AdminPanel({ onBack }) {
           {field("Pages", (
             <input type="number" value={pages} onChange={(e) => setPages(e.target.value)} style={inputStyle} placeholder="e.g. 8" />
           ))}
-          {field("PDF file", (
-            <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files[0] || null)} style={inputStyle} />
+          {field("Google Drive link", (
+            <input
+              value={driveLink}
+              onChange={(e) => setDriveLink(e.target.value)}
+              style={inputStyle}
+              placeholder="https://drive.google.com/file/d/..."
+            />
           ))}
+          <p style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: -8, marginBottom: 14 }}>
+            Drive file ko "Anyone with the link can view" set karke uska link yahan paste karein.
+          </p>
 
           <button
             type="submit"
             disabled={uploading}
             style={{ width: "100%", background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "12px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive", marginTop: 6 }}
           >
-            {uploading ? "Uploading..." : "Upload note"}
+            {uploading ? "Adding..." : "Add note"}
           </button>
           {message && <p style={{ fontSize: 13, color: message.startsWith("Error") ? COLORS.stampRed : COLORS.ink, marginTop: 10 }}>{message}</p>}
         </form>
