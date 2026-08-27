@@ -90,6 +90,28 @@ function PdfViewer({ note }) {
         <div style={{ position: "relative", width: "100%", aspectRatio: "3 / 4", borderRadius: 6, overflow: "hidden", border: `1px solid ${COLORS.paperDark}` }}>
           <iframe src={toEmbedUrl(note.file_url)} title={note.title} style={{ width: "100%", height: "100%", border: "none" }} />
         </div>
+        {note.whatsapp_link && (
+          <a
+            href={note.whatsapp_link}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: "block",
+              textAlign: "center",
+              marginTop: 12,
+              background: "#25D366",
+              color: "#fff",
+              borderRadius: 6,
+              padding: "11px 16px",
+              fontSize: 14,
+              fontWeight: 700,
+              textDecoration: "none",
+              fontFamily: "'Kalam', cursive",
+            }}
+          >
+            📩 Poori Notes Kharidein (WhatsApp)
+          </a>
+        )}
       </RuledCard>
       <TornEdge />
     </div>

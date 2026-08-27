@@ -3,17 +3,17 @@ import { supabase } from "./supabaseClient";
 import { COLORS, FONTS, SCHOOL_CATALOG, ENTRANCE_CATALOG } from "./siteConfig";
 
 /*
-  Admin Panel - upload a PDF and it appears on the site instantly, no
-  code editing needed. Only reachable from App.jsx if the signed-in
-  user's email matches ADMIN_EMAIL in siteConfig.js.
+  Admin Panel - add/edit/delete notes, no code editing needed. Only
+  reachable from App.jsx if the signed-in user's email matches
+  ADMIN_EMAIL in siteConfig.js.
 
-  Needs, in your Supabase project:
-    - a public Storage bucket named "notes-pdfs"
-    - a table named "notes" with columns:
-      id, category, key, medium, subject, chapter, title, description,
-      pages, file_url, created_at
-  See the setup instructions given alongside this file for the exact
-  SQL to run.
+  Needs, in your Supabase "notes" table, these columns:
+    id, category, key, medium, subject, chapter, title, description,
+    pages, file_url, whatsapp_link, created_at
+
+  If you created the table before whatsapp_link existed, run this once
+  in the Supabase SQL Editor:
+    alter table notes add column whatsapp_link text;
 */
 
 function field(label, children) {
@@ -36,19 +36,19 @@ const inputStyle = {
   background: COLORS.paper,
 };
 
+const emptyForm = { category: "school", key: "", medium: "", subject: "", chapter: "", title: "", description: "", pages: "", driveLink: "", whatsappLink: "" };
+
 export default function AdminPanel({ onBack }) {
-  const [category, setCategory] = useState("school");
-  const [key, setKey] = useState("");
-  const [medium, setMedium] = useState("");
-  const [subject, setSubject] = useState("");
-  const [chapter, setChapter] = useState("");
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [pages, setPages] = useState("");
-  const [driveLink, setDriveLink] = useState("");
-  const [uploading, setUploading] = useState(false);
+  const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [existingNotes, setExistingNotes] = useState([]);
+
+  const { category, key, medium, subject, chapter, title, description, pages, driveLink, whatsappLink } = form;
+  function set(field, value) {
+    setForm((f) => ({ ...f, [field]: value }));
+  }
 
   const catalog = category === "school" ? SCHOOL_CATALOG : ENTRANCE_CATALOG;
   const keyOptions = Object.keys(catalog);
@@ -56,52 +56,75 @@ export default function AdminPanel({ onBack }) {
   const subjectOptions = key && medium ? Object.keys(catalog[key][medium]) : [];
   const chapterOptions = key && medium && subject ? catalog[key][medium][subject] : [];
 
-  useEffect(() => {
-    setKey(""); setMedium(""); setSubject(""); setChapter("");
-  }, [category]);
-  useEffect(() => { setMedium(""); setSubject(""); setChapter(""); }, [key]);
-  useEffect(() => { setSubject(""); setChapter(""); }, [medium]);
-  useEffect(() => { setChapter(""); }, [subject]);
-  useEffect(() => {
-    if (chapter) setTitle(`${chapter} — Complete Notes`);
-  }, [chapter]);
-
   async function loadExisting() {
     const { data, error } = await supabase.from("notes").select("*").order("created_at", { ascending: false });
     if (!error && data) setExistingNotes(data);
   }
   useEffect(() => { loadExisting(); }, []);
 
-  async function handleUpload(e) {
+  function startEdit(note) {
+    setEditingId(note.id);
+    setForm({
+      category: note.category,
+      key: note.key,
+      medium: note.medium,
+      subject: note.subject,
+      chapter: note.chapter,
+      title: note.title,
+      description: note.description || "",
+      pages: note.pages != null ? String(note.pages) : "",
+      driveLink: note.file_url || "",
+      whatsappLink: note.whatsapp_link || "",
+    });
+    setMessage("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setForm(emptyForm);
+    setMessage("");
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault();
     setMessage("");
     if (!key || !medium || !subject || !chapter || !title.trim() || !driveLink.trim()) {
       setMessage("Sab fields aur Google Drive link zaroori hain.");
       return;
     }
-    setUploading(true);
+    setSaving(true);
+    const payload = {
+      category, key, medium, subject, chapter,
+      title: title.trim(),
+      description: description.trim(),
+      pages: pages ? parseInt(pages, 10) : null,
+      file_url: driveLink.trim(),
+      whatsapp_link: whatsappLink.trim() || null,
+    };
     try {
-      const { error: insertErr } = await supabase.from("notes").insert({
-        category, key, medium, subject, chapter,
-        title: title.trim(),
-        description: description.trim(),
-        pages: pages ? parseInt(pages, 10) : null,
-        file_url: driveLink.trim(),
-      });
-      if (insertErr) throw insertErr;
-
-      setMessage("Note add ho gaya ✓");
-      setTitle(""); setDescription(""); setPages(""); setDriveLink(""); setChapter("");
+      if (editingId) {
+        const { error } = await supabase.from("notes").update(payload).eq("id", editingId);
+        if (error) throw error;
+        setMessage("Note update ho gaya ✓");
+      } else {
+        const { error } = await supabase.from("notes").insert(payload);
+        if (error) throw error;
+        setMessage("Note add ho gaya ✓");
+      }
+      setEditingId(null);
+      setForm(emptyForm);
       loadExisting();
     } catch (err) {
       setMessage("Error: " + err.message);
     }
-    setUploading(false);
+    setSaving(false);
   }
 
   async function handleDelete(note) {
     if (!window.confirm(`Delete "${note.title}"?`)) return;
     await supabase.from("notes").delete().eq("id", note.id);
+    if (editingId === note.id) cancelEdit();
     loadExisting();
   }
 
@@ -116,67 +139,82 @@ export default function AdminPanel({ onBack }) {
       </header>
 
       <section style={{ maxWidth: 560, margin: "0 auto", padding: "32px 20px 60px" }}>
-        <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 18 }}>Upload a new PDF</h2>
+        <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 18 }}>
+          {editingId ? "Edit note" : "Add a new note"}
+        </h2>
 
-        <form onSubmit={handleUpload} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "18px 16px" }}>
+        <form onSubmit={handleSubmit} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "18px 16px" }}>
           {field("Category", (
-            <select value={category} onChange={(e) => setCategory(e.target.value)} style={inputStyle}>
+            <select value={category} onChange={(e) => set("category", e.target.value)} style={inputStyle}>
               <option value="school">School</option>
               <option value="entrance">Entrance Exam</option>
             </select>
           ))}
           {field(category === "school" ? "Class" : "Exam", (
-            <select value={key} onChange={(e) => setKey(e.target.value)} style={inputStyle}>
+            <select value={key} onChange={(e) => set("key", e.target.value)} style={inputStyle}>
               <option value="">Select</option>
               {keyOptions.map((k) => <option key={k} value={k}>{k}</option>)}
             </select>
           ))}
           {field("Medium", (
-            <select value={medium} onChange={(e) => setMedium(e.target.value)} style={inputStyle} disabled={!key}>
+            <select value={medium} onChange={(e) => set("medium", e.target.value)} style={inputStyle} disabled={!key}>
               <option value="">Select</option>
               {mediumOptions.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           ))}
           {field("Subject", (
-            <select value={subject} onChange={(e) => setSubject(e.target.value)} style={inputStyle} disabled={!medium}>
+            <select value={subject} onChange={(e) => set("subject", e.target.value)} style={inputStyle} disabled={!medium}>
               <option value="">Select</option>
               {subjectOptions.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           ))}
           {field("Chapter", (
-            <select value={chapter} onChange={(e) => setChapter(e.target.value)} style={inputStyle} disabled={!subject}>
+            <select value={chapter} onChange={(e) => set("chapter", e.target.value)} style={inputStyle} disabled={!subject}>
               <option value="">Select</option>
               {chapterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           ))}
           {field("Title", (
-            <input value={title} onChange={(e) => setTitle(e.target.value)} style={inputStyle} placeholder="Note title" />
+            <input value={title} onChange={(e) => set("title", e.target.value)} style={inputStyle} placeholder="Note title" />
           ))}
           {field("Description", (
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} style={{ ...inputStyle, minHeight: 60, resize: "vertical" }} placeholder="Short description" />
+            <textarea value={description} onChange={(e) => set("description", e.target.value)} style={{ ...inputStyle, minHeight: 60, resize: "vertical" }} placeholder="Short description" />
           ))}
           {field("Pages", (
-            <input type="number" value={pages} onChange={(e) => setPages(e.target.value)} style={inputStyle} placeholder="e.g. 8" />
+            <input type="number" value={pages} onChange={(e) => set("pages", e.target.value)} style={inputStyle} placeholder="e.g. 8" />
           ))}
-          {field("Google Drive link", (
-            <input
-              value={driveLink}
-              onChange={(e) => setDriveLink(e.target.value)}
-              style={inputStyle}
-              placeholder="https://drive.google.com/file/d/..."
-            />
+          {field("Google Drive link (preview shown on site)", (
+            <input value={driveLink} onChange={(e) => set("driveLink", e.target.value)} style={inputStyle} placeholder="https://drive.google.com/file/d/..." />
           ))}
           <p style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: -8, marginBottom: 14 }}>
             Drive file ko "Anyone with the link can view" set karke uska link yahan paste karein.
           </p>
 
-          <button
-            type="submit"
-            disabled={uploading}
-            style={{ width: "100%", background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "12px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive", marginTop: 6 }}
-          >
-            {uploading ? "Adding..." : "Add note"}
-          </button>
+          {field("WhatsApp Business product link (optional)", (
+            <input value={whatsappLink} onChange={(e) => set("whatsappLink", e.target.value)} style={inputStyle} placeholder="https://wa.me/... ya catalog item link" />
+          ))}
+          <p style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: -8, marginBottom: 14 }}>
+            Agar ye bhara hai, note ke neeche "Buy full notes on WhatsApp" button dikhega jo seedha is link par le jayega. Khali chhoda to button nahi dikhega.
+          </p>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button
+              type="submit"
+              disabled={saving}
+              style={{ flex: 1, background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "12px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive" }}
+            >
+              {saving ? "Saving..." : editingId ? "Update note" : "Add note"}
+            </button>
+            {editingId && (
+              <button
+                type="button"
+                onClick={cancelEdit}
+                style={{ background: "none", border: `1.5px solid ${COLORS.inkSoft}55`, color: COLORS.ink, borderRadius: 6, padding: "12px 16px", fontSize: 14, cursor: "pointer" }}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
           {message && <p style={{ fontSize: 13, color: message.startsWith("Error") ? COLORS.stampRed : COLORS.ink, marginTop: 10 }}>{message}</p>}
         </form>
 
@@ -186,11 +224,16 @@ export default function AdminPanel({ onBack }) {
             <div key={n.id} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 6, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
               <div>
                 <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600 }}>{n.title}</p>
-                <p style={{ margin: 0, fontSize: 11.5, color: COLORS.inkSoft }}>{n.key} · {n.subject} · {n.chapter}</p>
+                <p style={{ margin: 0, fontSize: 11.5, color: COLORS.inkSoft }}>{n.key} · {n.medium} · {n.subject} · {n.chapter}</p>
               </div>
-              <button onClick={() => handleDelete(n)} style={{ background: "none", border: "none", color: COLORS.stampRed, fontSize: 12.5, cursor: "pointer", flexShrink: 0 }}>
-                Delete
-              </button>
+              <div style={{ display: "flex", gap: 12, flexShrink: 0 }}>
+                <button onClick={() => startEdit(n)} style={{ background: "none", border: "none", color: COLORS.ink, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>
+                  Edit
+                </button>
+                <button onClick={() => handleDelete(n)} style={{ background: "none", border: "none", color: COLORS.stampRed, fontSize: 12.5, cursor: "pointer" }}>
+                  Delete
+                </button>
+              </div>
             </div>
           ))}
           {existingNotes.length === 0 && <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Koi note upload nahi hua ab tak.</p>}
