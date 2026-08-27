@@ -90,14 +90,6 @@ function PdfViewer({ note }) {
         <div style={{ position: "relative", width: "100%", aspectRatio: "3 / 4", borderRadius: 6, overflow: "hidden", border: `1px solid ${COLORS.paperDark}` }}>
           <iframe src={toEmbedUrl(note.file_url)} title={note.title} style={{ width: "100%", height: "100%", border: "none" }} />
         </div>
-        <a
-          href={note.file_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ display: "inline-block", marginTop: 10, fontSize: 12.5, color: COLORS.margin, textDecoration: "underline" }}
-        >
-          PDF nahi dikh raha? Yahan tap karein
-        </a>
       </RuledCard>
       <TornEdge />
     </div>

@@ -85,13 +85,34 @@ const SSC_ENGLISH = ["Reading Comprehension", "Cloze Test", "Error Spotting", "S
 const SSC_GA = ["Static GK", "History", "Geography", "Polity", "Economy", "Science", "Current Affairs", "Important Days and Schemes"];
 
 export const SCHOOL_CATALOG = {
-  "Class 6": { "Hindi Medium": { Maths: MATHS_6, Science: SCIENCE_6, History: HISTORY_6, Geography: GEOGRAPHY_6, Civics: CIVICS_6 } },
-  "Class 7": { "Hindi Medium": { Maths: MATHS_7, Science: SCIENCE_7, History: HISTORY_7, Geography: GEOGRAPHY_7, Civics: CIVICS_7 } },
-  "Class 8": { "Hindi Medium": { Maths: MATHS_8, Science: SCIENCE_8, History: HISTORY_8, Geography: GEOGRAPHY_8, Civics: CIVICS_8 } },
-  "Class 9": { "Hindi Medium": { Maths: MATHS_9, Science: SCIENCE_9, History: HISTORY_9, Geography: GEOGRAPHY_9, Civics: CIVICS_9, Economics: ECONOMICS_9 } },
-  "Class 10": { "Hindi Medium": { Maths: MATHS_10, Science: SCIENCE_10, History: HISTORY_10, Geography: GEOGRAPHY_10, Civics: CIVICS_10, Economics: ECONOMICS_10 } },
-  "Class 11": { "Hindi Medium": { Physics: PHYSICS_11, Chemistry: CHEMISTRY_11, Maths: MATHS_11, Biology: BIOLOGY_11 } },
-  "Class 12": { "Hindi Medium": { Physics: PHYSICS_12, Chemistry: CHEMISTRY_12, Maths: MATHS_12, Biology: BIOLOGY_12 } },
+  "Class 6": {
+    "Hindi Medium": { Maths: MATHS_6, Science: SCIENCE_6, History: HISTORY_6, Geography: GEOGRAPHY_6, Civics: CIVICS_6 },
+    "English Medium": { Maths: MATHS_6, Science: SCIENCE_6, History: HISTORY_6, Geography: GEOGRAPHY_6, Civics: CIVICS_6 },
+  },
+  "Class 7": {
+    "Hindi Medium": { Maths: MATHS_7, Science: SCIENCE_7, History: HISTORY_7, Geography: GEOGRAPHY_7, Civics: CIVICS_7 },
+    "English Medium": { Maths: MATHS_7, Science: SCIENCE_7, History: HISTORY_7, Geography: GEOGRAPHY_7, Civics: CIVICS_7 },
+  },
+  "Class 8": {
+    "Hindi Medium": { Maths: MATHS_8, Science: SCIENCE_8, History: HISTORY_8, Geography: GEOGRAPHY_8, Civics: CIVICS_8 },
+    "English Medium": { Maths: MATHS_8, Science: SCIENCE_8, History: HISTORY_8, Geography: GEOGRAPHY_8, Civics: CIVICS_8 },
+  },
+  "Class 9": {
+    "Hindi Medium": { Maths: MATHS_9, Science: SCIENCE_9, History: HISTORY_9, Geography: GEOGRAPHY_9, Civics: CIVICS_9, Economics: ECONOMICS_9 },
+    "English Medium": { Maths: MATHS_9, Science: SCIENCE_9, History: HISTORY_9, Geography: GEOGRAPHY_9, Civics: CIVICS_9, Economics: ECONOMICS_9 },
+  },
+  "Class 10": {
+    "Hindi Medium": { Maths: MATHS_10, Science: SCIENCE_10, History: HISTORY_10, Geography: GEOGRAPHY_10, Civics: CIVICS_10, Economics: ECONOMICS_10 },
+    "English Medium": { Maths: MATHS_10, Science: SCIENCE_10, History: HISTORY_10, Geography: GEOGRAPHY_10, Civics: CIVICS_10, Economics: ECONOMICS_10 },
+  },
+  "Class 11": {
+    "Hindi Medium": { Physics: PHYSICS_11, Chemistry: CHEMISTRY_11, Maths: MATHS_11, Biology: BIOLOGY_11 },
+    "English Medium": { Physics: PHYSICS_11, Chemistry: CHEMISTRY_11, Maths: MATHS_11, Biology: BIOLOGY_11 },
+  },
+  "Class 12": {
+    "Hindi Medium": { Physics: PHYSICS_12, Chemistry: CHEMISTRY_12, Maths: MATHS_12, Biology: BIOLOGY_12 },
+    "English Medium": { Physics: PHYSICS_12, Chemistry: CHEMISTRY_12, Maths: MATHS_12, Biology: BIOLOGY_12 },
+  },
 };
 
 export const ENTRANCE_CATALOG = {
@@ -103,25 +124,28 @@ export const ENTRANCE_CATALOG = {
       "General Studies IV": ["Ethics, Integrity and Aptitude"],
       CSAT: ["Comprehension", "Reasoning", "Quantitative Aptitude", "Decision Making"],
     },
+    "English Medium": {
+      "General Studies I": ["Indian Heritage and Culture", "History of India", "World History", "Indian Society", "Geography of India and World"],
+      "General Studies II": ["Polity and Governance", "Constitution", "Social Justice", "International Relations"],
+      "General Studies III": ["Economy", "Environment", "Science and Technology", "Security and Disaster Management"],
+      "General Studies IV": ["Ethics, Integrity and Aptitude"],
+      CSAT: ["Comprehension", "Reasoning", "Quantitative Aptitude", "Decision Making"],
+    },
   },
   JEE: {
-    "Hindi Medium": {
-      Physics: PHYSICS_11.concat(PHYSICS_12),
-      Chemistry: CHEMISTRY_11.concat(CHEMISTRY_12),
-      Maths: MATHS_11.concat(MATHS_12),
-    },
+    "Hindi Medium": { Physics: PHYSICS_11.concat(PHYSICS_12), Chemistry: CHEMISTRY_11.concat(CHEMISTRY_12), Maths: MATHS_11.concat(MATHS_12) },
+    "English Medium": { Physics: PHYSICS_11.concat(PHYSICS_12), Chemistry: CHEMISTRY_11.concat(CHEMISTRY_12), Maths: MATHS_11.concat(MATHS_12) },
   },
   NEET: {
-    "Hindi Medium": {
-      Physics: PHYSICS_11.concat(PHYSICS_12),
-      Chemistry: CHEMISTRY_11.concat(CHEMISTRY_12),
-      Biology: BIOLOGY_11.concat(BIOLOGY_12),
-    },
+    "Hindi Medium": { Physics: PHYSICS_11.concat(PHYSICS_12), Chemistry: CHEMISTRY_11.concat(CHEMISTRY_12), Biology: BIOLOGY_11.concat(BIOLOGY_12) },
+    "English Medium": { Physics: PHYSICS_11.concat(PHYSICS_12), Chemistry: CHEMISTRY_11.concat(CHEMISTRY_12), Biology: BIOLOGY_11.concat(BIOLOGY_12) },
   },
   "SSC CGL": {
     "Hindi Medium": { Reasoning: SSC_REASONING, "Quantitative Aptitude": SSC_QUANT, "English Language": SSC_ENGLISH, "General Awareness": SSC_GA },
+    "English Medium": { Reasoning: SSC_REASONING, "Quantitative Aptitude": SSC_QUANT, "English Language": SSC_ENGLISH, "General Awareness": SSC_GA },
   },
   "SSC CHSL": {
     "Hindi Medium": { Reasoning: SSC_REASONING, "Quantitative Aptitude": SSC_QUANT, "English Language": SSC_ENGLISH, "General Awareness": SSC_GA },
+    "English Medium": { Reasoning: SSC_REASONING, "Quantitative Aptitude": SSC_QUANT, "English Language": SSC_ENGLISH, "General Awareness": SSC_GA },
   },
 };
