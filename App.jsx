@@ -83,7 +83,7 @@ const COLORS = {
 /* ======================================================================
    EDIT ME — tuition name & about text shown on the home screen.
    ====================================================================== */
-const TUITION_NAME = "NextGen Learning by Sohel Sir";
+const TUITION_NAME = "NextGen Notes (From NextGen Learning by Sohel Sir)";
 const ABOUT_WEBSITE =
   "NextGen Notes is a free digital notebook for students of Class 6 to 12. " +
   "Sign in, open the ☰ menu, pick your class, subject and chapter — the notes " +
