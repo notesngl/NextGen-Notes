@@ -33,7 +33,7 @@ export const ABOUT_TUITION =
   "the same explanations used in daily class, typed up chapter by chapter " +
   "so every student has the same clear notes to revise from.";
 
-export const ADMIN_EMAIL = "your-email@gmail.com";
+export const ADMIN_EMAIL = "nextgenlearningrjl@gmail.com";
 
 /* Old-NCERT-based chapter lists, written from memory — double-check
    against the current syllabus before publishing. */
