@@ -4,11 +4,17 @@ import { COLORS, FONTS } from "./siteConfig";
 
 /*
   Admin Panel — two tabs:
-    1. Notes    — add/edit/delete notes (unchanged behaviour)
-    2. Menu     — add/rename/delete Class/Exam, Medium, Subject, Chapter.
-                  This replaces the old hardcoded SCHOOL_CATALOG /
-                  ENTRANCE_CATALOG in siteConfig.js. Data lives in the
-                  Supabase table "site_catalog" (see catalog_migration.sql).
+    1. Notes    — add/edit/delete notes
+    2. Menu     — add/rename/delete School/Entrance -> Class/Exam ->
+                  Subject -> Chapter, under each Medium.
+
+  Menu data lives in Supabase table "site_catalog", single row with
+  id='catalog', shape:
+    {
+      "Hindi Medium":   { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} },
+      "English Medium": { "school": {...}, "entrance": {...} }
+    }
+  See catalog_migration_v2.sql for the one-time table setup.
 
   Only reachable from App.jsx if the signed-in user's email matches
   ADMIN_EMAIL in siteConfig.js.
@@ -16,9 +22,6 @@ import { COLORS, FONTS } from "./siteConfig";
   "notes" table needs these columns:
     id, category, key, medium, subject, chapter, title, description,
     pages, file_url, whatsapp_link, created_at
-
-  "site_catalog" table needs:
-    id (text, 'school' or 'entrance'), data (jsonb)
 */
 
 function field(label, children) {
@@ -41,36 +44,45 @@ const inputStyle = {
   background: COLORS.paper,
 };
 
-const emptyForm = { category: "school", key: "", medium: "", subject: "", chapter: "", title: "", description: "", pages: "", driveLink: "", whatsappLink: "" };
+const emptyForm = { medium: "", category: "school", key: "", subject: "", chapter: "", title: "", description: "", pages: "", driveLink: "", whatsappLink: "" };
 
-/* ---------- Tab 1: Notes (unchanged from before) ---------- */
+const btnStyle = {
+  background: COLORS.paper,
+  border: `1px solid ${COLORS.paperDark}`,
+  borderRadius: 6,
+  padding: "9px 12px",
+  fontSize: 13.5,
+  cursor: "pointer",
+  fontFamily: "'Work Sans', sans-serif",
+  color: COLORS.ink,
+  textAlign: "left",
+};
+const btnActiveStyle = { ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin, fontWeight: 600 };
+const smallLink = { background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 };
+
+/* ---------- Tab 1: Notes ---------- */
 
 function NotesTab() {
-  const [catalog, setCatalog] = useState({ school: {}, entrance: {} });
+  const [catalog, setCatalog] = useState({});
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [existingNotes, setExistingNotes] = useState([]);
 
-  const { category, key, medium, subject, chapter, title, description, pages, driveLink, whatsappLink } = form;
+  const { medium, category, key, subject, chapter, title, description, pages, driveLink, whatsappLink } = form;
   function set(fieldName, value) {
     setForm((f) => ({ ...f, [fieldName]: value }));
   }
 
-  const catalogRoot = category === "school" ? catalog.school : catalog.entrance;
-  const keyOptions = Object.keys(catalogRoot || {});
-  const mediumOptions = key && catalogRoot[key] ? Object.keys(catalogRoot[key]) : [];
-  const subjectOptions = key && medium && catalogRoot[key]?.[medium] ? Object.keys(catalogRoot[key][medium]) : [];
-  const chapterOptions = key && medium && subject && catalogRoot[key]?.[medium]?.[subject] ? catalogRoot[key][medium][subject] : [];
+  const mediumOptions = Object.keys(catalog);
+  const keyOptions = medium ? Object.keys(catalog[medium]?.[category] || {}) : [];
+  const subjectOptions = medium && key ? Object.keys(catalog[medium]?.[category]?.[key] || {}) : [];
+  const chapterOptions = medium && key && subject ? (catalog[medium]?.[category]?.[key]?.[subject] || []) : [];
 
   async function loadCatalog() {
-    const { data, error } = await supabase.from("site_catalog").select("*");
-    if (!error && data) {
-      const next = { school: {}, entrance: {} };
-      data.forEach((row) => { next[row.id] = row.data || {}; });
-      setCatalog(next);
-    }
+    const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "catalog").single();
+    setCatalog(!error && data ? data.data || {} : {});
   }
 
   async function loadExisting() {
@@ -82,9 +94,9 @@ function NotesTab() {
   function startEdit(note) {
     setEditingId(note.id);
     setForm({
+      medium: note.medium,
       category: note.category,
       key: note.key,
-      medium: note.medium,
       subject: note.subject,
       chapter: note.chapter,
       title: note.title,
@@ -106,7 +118,7 @@ function NotesTab() {
   async function handleSubmit(e) {
     e.preventDefault();
     setMessage("");
-    if (!key || !medium || !subject || !chapter || !title.trim() || !driveLink.trim()) {
+    if (!medium || !key || !subject || !chapter || !title.trim() || !driveLink.trim()) {
       setMessage("Sab fields aur Google Drive link zaroori hain.");
       return;
     }
@@ -152,26 +164,26 @@ function NotesTab() {
       </h2>
 
       <form onSubmit={handleSubmit} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "18px 16px" }}>
+        {field("Medium", (
+          <select value={medium} onChange={(e) => set("medium", e.target.value)} style={inputStyle}>
+            <option value="">Select</option>
+            {mediumOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        ))}
         {field("Category", (
-          <select value={category} onChange={(e) => set("category", e.target.value)} style={inputStyle}>
+          <select value={category} onChange={(e) => set("category", e.target.value)} style={inputStyle} disabled={!medium}>
             <option value="school">School</option>
             <option value="entrance">Entrance Exam</option>
           </select>
         ))}
         {field(category === "school" ? "Class" : "Exam", (
-          <select value={key} onChange={(e) => set("key", e.target.value)} style={inputStyle}>
+          <select value={key} onChange={(e) => set("key", e.target.value)} style={inputStyle} disabled={!medium}>
             <option value="">Select</option>
             {keyOptions.map((k) => <option key={k} value={k}>{k}</option>)}
           </select>
         ))}
-        {field("Medium", (
-          <select value={medium} onChange={(e) => set("medium", e.target.value)} style={inputStyle} disabled={!key}>
-            <option value="">Select</option>
-            {mediumOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
-        ))}
         {field("Subject", (
-          <select value={subject} onChange={(e) => set("subject", e.target.value)} style={inputStyle} disabled={!medium}>
+          <select value={subject} onChange={(e) => set("subject", e.target.value)} style={inputStyle} disabled={!key}>
             <option value="">Select</option>
             {subjectOptions.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
@@ -182,7 +194,7 @@ function NotesTab() {
             {chapterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         ))}
-        {(key && medium && subject && chapterOptions.length === 0) && (
+        {(key && subject && chapterOptions.length === 0) && (
           <p style={{ fontSize: 12, color: COLORS.stampRed, marginTop: -8, marginBottom: 14 }}>
             Is subject mein abhi koi chapter nahi hai — pehle "Menu" tab se chapter add karein.
           </p>
@@ -237,7 +249,7 @@ function NotesTab() {
           <div key={n.id} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 6, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
             <div>
               <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600 }}>{n.title}</p>
-              <p style={{ margin: 0, fontSize: 11.5, color: COLORS.inkSoft }}>{n.key} · {n.medium} · {n.subject} · {n.chapter}</p>
+              <p style={{ margin: 0, fontSize: 11.5, color: COLORS.inkSoft }}>{n.medium} · {n.key} · {n.subject} · {n.chapter}</p>
             </div>
             <div style={{ display: "flex", gap: 12, flexShrink: 0 }}>
               <button onClick={() => startEdit(n)} style={{ background: "none", border: "none", color: COLORS.ink, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>
@@ -255,112 +267,83 @@ function NotesTab() {
   );
 }
 
-/* ---------- Tab 2: Manage Menu (Class/Exam -> Medium -> Subject -> Chapter) ---------- */
-
-const btnStyle = {
-  background: COLORS.paper,
-  border: `1px solid ${COLORS.paperDark}`,
-  borderRadius: 6,
-  padding: "9px 12px",
-  fontSize: 13.5,
-  cursor: "pointer",
-  fontFamily: "'Work Sans', sans-serif",
-  color: COLORS.ink,
-  textAlign: "left",
-};
-const btnActiveStyle = { ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin, fontWeight: 600 };
-const smallLink = { background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 };
+/* ---------- Tab 2: Manage Menu ---------- */
 
 function ManageMenuTab() {
+  const [medium, setMedium] = useState("Hindi Medium");
   const [category, setCategory] = useState("school");
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(null); // full catalog blob
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
 
   const [selectedKey, setSelectedKey] = useState(null);
-  const [selectedMedium, setSelectedMedium] = useState(null);
   const [selectedSubject, setSelectedSubject] = useState(null);
 
   const [newKey, setNewKey] = useState("");
-  const [newMedium, setNewMedium] = useState("");
   const [newSubject, setNewSubject] = useState("");
   const [newChapter, setNewChapter] = useState("");
 
-  async function load(cat) {
+  async function load() {
     setLoading(true);
-    setSelectedKey(null); setSelectedMedium(null); setSelectedSubject(null);
-    const { data: row, error } = await supabase.from("site_catalog").select("data").eq("id", cat).single();
+    const { data: row, error } = await supabase.from("site_catalog").select("data").eq("id", "catalog").single();
     setData(!error && row ? row.data || {} : {});
     setLoading(false);
   }
+  useEffect(() => { load(); }, []);
 
-  useEffect(() => { load(category); }, [category]);
+  useEffect(() => { setSelectedKey(null); setSelectedSubject(null); }, [medium, category]);
 
   function clone() { return JSON.parse(JSON.stringify(data)); }
 
   async function save(updated) {
     setSaving(true);
     setMsg("");
-    const { error } = await supabase.from("site_catalog").update({ data: updated }).eq("id", category);
+    const { error } = await supabase.from("site_catalog").update({ data: updated }).eq("id", "catalog");
     if (error) setMsg("Error: " + error.message);
     else { setData(updated); setMsg("Saved ✓"); }
     setSaving(false);
   }
 
+  const branch = data?.[medium]?.[category] || {};
+
   function addKey() {
     if (!newKey.trim()) return;
     const d = clone();
-    if (d[newKey.trim()]) { setMsg("Ye pehle se hai."); return; }
-    d[newKey.trim()] = { "Hindi Medium": {}, "English Medium": {} };
+    if (d[medium][category][newKey.trim()]) { setMsg("Ye pehle se hai."); return; }
+    d[medium][category][newKey.trim()] = {};
     save(d);
     setNewKey("");
   }
   function deleteKey(k) {
     if (!window.confirm(`"${k}" aur uske andar sab kuch delete karein?`)) return;
     const d = clone();
-    delete d[k];
+    delete d[medium][category][k];
     save(d);
-    if (selectedKey === k) { setSelectedKey(null); setSelectedMedium(null); setSelectedSubject(null); }
+    if (selectedKey === k) { setSelectedKey(null); setSelectedSubject(null); }
   }
   function renameKey(oldK) {
     const nk = window.prompt("Naya naam:", oldK);
     if (!nk || !nk.trim() || nk === oldK) return;
     const d = clone();
-    d[nk.trim()] = d[oldK];
-    delete d[oldK];
+    d[medium][category][nk.trim()] = d[medium][category][oldK];
+    delete d[medium][category][oldK];
     save(d);
     if (selectedKey === oldK) setSelectedKey(nk.trim());
   }
 
-  function addMedium() {
-    if (!newMedium.trim() || !selectedKey) return;
-    const d = clone();
-    if (d[selectedKey][newMedium.trim()]) { setMsg("Ye pehle se hai."); return; }
-    d[selectedKey][newMedium.trim()] = {};
-    save(d);
-    setNewMedium("");
-  }
-  function deleteMedium(m) {
-    if (!window.confirm(`"${m}" delete karein?`)) return;
-    const d = clone();
-    delete d[selectedKey][m];
-    save(d);
-    if (selectedMedium === m) { setSelectedMedium(null); setSelectedSubject(null); }
-  }
-
   function addSubject() {
-    if (!newSubject.trim() || !selectedKey || !selectedMedium) return;
+    if (!newSubject.trim() || !selectedKey) return;
     const d = clone();
-    if (d[selectedKey][selectedMedium][newSubject.trim()]) { setMsg("Ye pehle se hai."); return; }
-    d[selectedKey][selectedMedium][newSubject.trim()] = [];
+    if (d[medium][category][selectedKey][newSubject.trim()]) { setMsg("Ye pehle se hai."); return; }
+    d[medium][category][selectedKey][newSubject.trim()] = [];
     save(d);
     setNewSubject("");
   }
   function deleteSubject(s) {
     if (!window.confirm(`"${s}" aur uske chapters delete karein?`)) return;
     const d = clone();
-    delete d[selectedKey][selectedMedium][s];
+    delete d[medium][category][selectedKey][s];
     save(d);
     if (selectedSubject === s) setSelectedSubject(null);
   }
@@ -368,151 +351,139 @@ function ManageMenuTab() {
     const ns = window.prompt("Naya naam:", oldS);
     if (!ns || !ns.trim() || ns === oldS) return;
     const d = clone();
-    d[selectedKey][selectedMedium][ns.trim()] = d[selectedKey][selectedMedium][oldS];
-    delete d[selectedKey][selectedMedium][oldS];
+    d[medium][category][selectedKey][ns.trim()] = d[medium][category][selectedKey][oldS];
+    delete d[medium][category][selectedKey][oldS];
     save(d);
     if (selectedSubject === oldS) setSelectedSubject(ns.trim());
   }
 
   function addChapter() {
-    if (!newChapter.trim() || !selectedKey || !selectedMedium || !selectedSubject) return;
+    if (!newChapter.trim() || !selectedKey || !selectedSubject) return;
     const d = clone();
-    d[selectedKey][selectedMedium][selectedSubject].push(newChapter.trim());
+    d[medium][category][selectedKey][selectedSubject].push(newChapter.trim());
     save(d);
     setNewChapter("");
   }
   function deleteChapter(idx) {
     const d = clone();
-    d[selectedKey][selectedMedium][selectedSubject].splice(idx, 1);
+    d[medium][category][selectedKey][selectedSubject].splice(idx, 1);
     save(d);
   }
   function renameChapter(idx, oldC) {
     const nc = window.prompt("Naya naam:", oldC);
     if (!nc || !nc.trim()) return;
     const d = clone();
-    d[selectedKey][selectedMedium][selectedSubject][idx] = nc.trim();
+    d[medium][category][selectedKey][selectedSubject][idx] = nc.trim();
     save(d);
   }
   function moveChapter(idx, dir) {
     const d = clone();
-    const arr = d[selectedKey][selectedMedium][selectedSubject];
+    const arr = d[medium][category][selectedKey][selectedSubject];
     const j = idx + dir;
     if (j < 0 || j >= arr.length) return;
     [arr[idx], arr[j]] = [arr[j], arr[idx]];
     save(d);
   }
 
-  const chapters = selectedKey && selectedMedium && selectedSubject ? (data[selectedKey][selectedMedium][selectedSubject] || []) : [];
+  const chapters = selectedKey && selectedSubject ? (branch[selectedKey]?.[selectedSubject] || []) : [];
 
   return (
     <section style={{ maxWidth: 700, margin: "0 auto", padding: "32px 20px 60px" }}>
       <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Manage Menu</h2>
       <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
-        Yahan se website ke ☰ menu mein Class/Exam, Medium, Subject aur Chapter add/rename/delete kar sakte ho — code chhoone ki zaroorat nahi.
+        Yahan se website ke ☰ menu mein Class/Exam, Subject aur Chapter add/rename/delete kar sakte ho — code chhoone ki zaroorat nahi.
       </p>
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-        <button onClick={() => setCategory("school")} style={category === "school" ? btnActiveStyle : btnStyle}>School</button>
-        <button onClick={() => setCategory("entrance")} style={category === "entrance" ? btnActiveStyle : btnStyle}>Entrance Exam</button>
-        {saving && <span style={{ fontSize: 12, color: COLORS.inkSoft, alignSelf: "center" }}>Saving...</span>}
-      </div>
-
-      {msg && <p style={{ fontSize: 13, color: msg.startsWith("Error") ? COLORS.stampRed : COLORS.ink, marginBottom: 14 }}>{msg}</p>}
 
       {loading || !data ? (
         <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
       ) : (
-        <div style={{ display: "grid", gap: 20 }}>
-
-          {/* Class / Exam column */}
-          <div>
-            <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 16, margin: "0 0 8px" }}>
-              {category === "school" ? "Classes" : "Exams"}
-            </h3>
-            <div style={{ display: "grid", gap: 6 }}>
-              {Object.keys(data).map((k) => (
-                <div key={k} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <button
-                    onClick={() => { setSelectedKey(k); setSelectedMedium(null); setSelectedSubject(null); }}
-                    style={{ ...(selectedKey === k ? btnActiveStyle : btnStyle), flex: 1 }}
-                  >
-                    {k}
-                  </button>
-                  <button onClick={() => renameKey(k)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
-                  <button onClick={() => deleteKey(k)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
-                </div>
-              ))}
-              {Object.keys(data).length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi {category === "school" ? "class" : "exam"} nahi hai.</p>}
-            </div>
-            <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-              <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder={category === "school" ? "e.g. Class 6" : "e.g. JEE"} style={{ ...inputStyle, flex: 1 }} />
-              <button onClick={addKey} style={{ ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin }}>Add</button>
-            </div>
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            {Object.keys(data).map((m) => (
+              <button key={m} onClick={() => setMedium(m)} style={medium === m ? btnActiveStyle : btnStyle}>{m}</button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            <button onClick={() => setCategory("school")} style={category === "school" ? btnActiveStyle : btnStyle}>School</button>
+            <button onClick={() => setCategory("entrance")} style={category === "entrance" ? btnActiveStyle : btnStyle}>Entrance Exam</button>
+            {saving && <span style={{ fontSize: 12, color: COLORS.inkSoft, alignSelf: "center" }}>Saving...</span>}
           </div>
 
-          {/* Medium column */}
-          {selectedKey && (
-            <div>
-              <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 16, margin: "0 0 8px" }}>Medium — {selectedKey}</h3>
-              <div style={{ display: "grid", gap: 6 }}>
-                {Object.keys(data[selectedKey] || {}).map((m) => (
-                  <div key={m} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button onClick={() => { setSelectedMedium(m); setSelectedSubject(null); }} style={{ ...(selectedMedium === m ? btnActiveStyle : btnStyle), flex: 1 }}>{m}</button>
-                    <button onClick={() => deleteMedium(m)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
-                  </div>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-                <input value={newMedium} onChange={(e) => setNewMedium(e.target.value)} placeholder="e.g. Hindi Medium" style={{ ...inputStyle, flex: 1 }} />
-                <button onClick={addMedium} style={{ ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin }}>Add</button>
-              </div>
-            </div>
-          )}
+          {msg && <p style={{ fontSize: 13, color: msg.startsWith("Error") ? COLORS.stampRed : COLORS.ink, marginBottom: 14 }}>{msg}</p>}
 
-          {/* Subject column */}
-          {selectedKey && selectedMedium && (
-            <div>
-              <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 16, margin: "0 0 8px" }}>Subjects — {selectedKey} · {selectedMedium}</h3>
-              <div style={{ display: "grid", gap: 6 }}>
-                {Object.keys(data[selectedKey][selectedMedium] || {}).map((s) => (
-                  <div key={s} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button onClick={() => setSelectedSubject(s)} style={{ ...(selectedSubject === s ? btnActiveStyle : btnStyle), flex: 1 }}>{s}</button>
-                    <button onClick={() => renameSubject(s)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
-                    <button onClick={() => deleteSubject(s)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
-                  </div>
-                ))}
-                {Object.keys(data[selectedKey][selectedMedium] || {}).length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi subject nahi hai.</p>}
-              </div>
-              <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-                <input value={newSubject} onChange={(e) => setNewSubject(e.target.value)} placeholder="e.g. Maths" style={{ ...inputStyle, flex: 1 }} />
-                <button onClick={addSubject} style={{ ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin }}>Add</button>
-              </div>
-            </div>
-          )}
+          <div style={{ display: "grid", gap: 20 }}>
 
-          {/* Chapter column */}
-          {selectedKey && selectedMedium && selectedSubject && (
+            {/* Class / Exam column */}
             <div>
-              <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 16, margin: "0 0 8px" }}>Chapters — {selectedSubject}</h3>
+              <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 16, margin: "0 0 8px" }}>
+                {medium} · {category === "school" ? "School — Classes" : "Entrance Exams"}
+              </h3>
               <div style={{ display: "grid", gap: 6 }}>
-                {chapters.map((c, idx) => (
-                  <div key={idx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <span style={{ ...btnStyle, flex: 1, cursor: "default" }}>{c}</span>
-                    <button onClick={() => moveChapter(idx, -1)} disabled={idx === 0} style={{ ...smallLink, color: COLORS.ink }}>↑</button>
-                    <button onClick={() => moveChapter(idx, 1)} disabled={idx === chapters.length - 1} style={{ ...smallLink, color: COLORS.ink }}>↓</button>
-                    <button onClick={() => renameChapter(idx, c)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
-                    <button onClick={() => deleteChapter(idx)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
+                {Object.keys(branch).map((k) => (
+                  <div key={k} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button
+                      onClick={() => { setSelectedKey(k); setSelectedSubject(null); }}
+                      style={{ ...(selectedKey === k ? btnActiveStyle : btnStyle), flex: 1 }}
+                    >
+                      {k}
+                    </button>
+                    <button onClick={() => renameKey(k)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
+                    <button onClick={() => deleteKey(k)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
                   </div>
                 ))}
-                {chapters.length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi chapter nahi hai.</p>}
+                {Object.keys(branch).length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi {category === "school" ? "class" : "exam"} nahi hai.</p>}
               </div>
               <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-                <input value={newChapter} onChange={(e) => setNewChapter(e.target.value)} placeholder="Chapter ka naam" style={{ ...inputStyle, flex: 1 }} />
-                <button onClick={addChapter} style={{ ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin }}>Add</button>
+                <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder={category === "school" ? "e.g. Class 6" : "e.g. JEE"} style={{ ...inputStyle, flex: 1 }} />
+                <button onClick={addKey} style={{ ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin }}>Add</button>
               </div>
             </div>
-          )}
-        </div>
+
+            {/* Subject column */}
+            {selectedKey && (
+              <div>
+                <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 16, margin: "0 0 8px" }}>Subjects — {selectedKey}</h3>
+                <div style={{ display: "grid", gap: 6 }}>
+                  {Object.keys(branch[selectedKey] || {}).map((s) => (
+                    <div key={s} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <button onClick={() => setSelectedSubject(s)} style={{ ...(selectedSubject === s ? btnActiveStyle : btnStyle), flex: 1 }}>{s}</button>
+                      <button onClick={() => renameSubject(s)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
+                      <button onClick={() => deleteSubject(s)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
+                    </div>
+                  ))}
+                  {Object.keys(branch[selectedKey] || {}).length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi subject nahi hai.</p>}
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                  <input value={newSubject} onChange={(e) => setNewSubject(e.target.value)} placeholder="e.g. Maths" style={{ ...inputStyle, flex: 1 }} />
+                  <button onClick={addSubject} style={{ ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin }}>Add</button>
+                </div>
+              </div>
+            )}
+
+            {/* Chapter column */}
+            {selectedKey && selectedSubject && (
+              <div>
+                <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 16, margin: "0 0 8px" }}>Chapters — {selectedSubject}</h3>
+                <div style={{ display: "grid", gap: 6 }}>
+                  {chapters.map((c, idx) => (
+                    <div key={idx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <span style={{ ...btnStyle, flex: 1, cursor: "default" }}>{c}</span>
+                      <button onClick={() => moveChapter(idx, -1)} disabled={idx === 0} style={{ ...smallLink, color: COLORS.ink }}>↑</button>
+                      <button onClick={() => moveChapter(idx, 1)} disabled={idx === chapters.length - 1} style={{ ...smallLink, color: COLORS.ink }}>↓</button>
+                      <button onClick={() => renameChapter(idx, c)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
+                      <button onClick={() => deleteChapter(idx)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
+                    </div>
+                  ))}
+                  {chapters.length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi chapter nahi hai.</p>}
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                  <input value={newChapter} onChange={(e) => setNewChapter(e.target.value)} placeholder="Chapter ka naam" style={{ ...inputStyle, flex: 1 }} />
+                  <button onClick={addChapter} style={{ ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin }}>Add</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
       )}
     </section>
   );
