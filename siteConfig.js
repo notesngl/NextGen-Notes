@@ -29,7 +29,7 @@ export const FONTS = `
 @import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Work+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap');
 `;
 
-export const TUITION_NAME = "NextGen Notes (From NextGen Learning By Sohel Sir)";
+export const TUITION_NAME = "NextGen Notes (From NGL By Andy)";
 export const ABOUT_WEBSITE =
   "NextGen Notes is a free digital notebook for school students and " +
   "entrance-exam aspirants. Sign in, open the \u2630 menu, pick your class or " +
