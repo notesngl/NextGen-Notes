@@ -1,18 +1,18 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
-import { COLORS, FONTS, TUITION_NAME, ABOUT_WEBSITE, ABOUT_TUITION, ADMIN_EMAIL, SCHOOL_CATALOG, ENTRANCE_CATALOG } from "./siteConfig";
+import { COLORS, FONTS, TUITION_NAME, ABOUT_WEBSITE, ABOUT_TUITION, ADMIN_EMAIL } from "./siteConfig";
 import AdminPanel from "./AdminPanel";
 
 /*
   NextGen Notes — digital handwritten notes storefront.
-  Notes are NOT hardcoded here anymore — they live in a Supabase table
-  called "notes". The Admin Panel (visible only to ADMIN_EMAIL, set in
-  siteConfig.js) uploads PDFs and writes rows into that table; this file
-  just reads them and slots them into the right Class/Exam -> Subject ->
-  Chapter folder.
 
-  See siteConfig.js for the class/subject/chapter catalog and the
-  ADMIN_EMAIL setting, and AdminPanel.jsx for the upload form.
+  Notes live in a Supabase table called "notes" (unchanged).
+  The Class/Exam -> Medium -> Subject -> Chapter MENU now also lives in
+  Supabase, in a table called "site_catalog" (one row with id='school',
+  one row with id='entrance', each holding the nested structure as JSON).
+  Both the notes and the menu are edited from the Admin Panel — no code
+  changes needed anymore. See catalog_migration.sql for the one-time
+  table setup.
 */
 
 function Stamp({ size = 84 }) {
@@ -118,13 +118,14 @@ function PdfViewer({ note }) {
   );
 }
 
-/* Menu: School / Entrance Exam -> Class or Exam -> Hindi Medium */
-function NavDrawer({ open, onClose, onHome, onPickMedium, isAdmin, onOpenAdmin }) {
+/* Menu: School / Entrance Exam -> Class or Exam -> Medium. Built live
+   from the "catalog" prop (fetched from Supabase's site_catalog table). */
+function NavDrawer({ open, onClose, onHome, onPickMedium, isAdmin, onOpenAdmin, catalog }) {
   const [branch, setBranch] = useState(null);
   const [openItem, setOpenItem] = useState(null);
 
   if (!open) return null;
-  const catalogFor = branch === "school" ? SCHOOL_CATALOG : ENTRANCE_CATALOG;
+  const catalogFor = branch === "school" ? catalog.school : catalog.entrance;
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", justifyContent: "flex-end" }}>
@@ -149,7 +150,7 @@ function NavDrawer({ open, onClose, onHome, onPickMedium, isAdmin, onOpenAdmin }
                 <span>{b === "school" ? "School" : "Entrance Exam"}</span>
                 <span style={{ color: COLORS.inkSoft, fontSize: 13 }}>{branch === b ? "▾" : "▸"}</span>
               </button>
-              {branch === b && Object.keys(catalogFor).map((item) => (
+              {branch === b && Object.keys(catalogFor || {}).map((item) => (
                 <div key={item}>
                   <button
                     onClick={() => setOpenItem(openItem === item ? null : item)}
@@ -222,6 +223,7 @@ export default function NextGenNotes() {
   const [nav, setNav] = useState(null);
   const [view, setView] = useState("store"); // "store" | "admin"
   const [notes, setNotes] = useState([]);
+  const [catalog, setCatalog] = useState(null); // { school: {...}, entrance: {...} }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -234,11 +236,25 @@ export default function NextGenNotes() {
     if (!error && data) setNotes(data);
   }
 
+  async function loadCatalog() {
+    const { data, error } = await supabase.from("site_catalog").select("*");
+    if (!error && data) {
+      const next = { school: {}, entrance: {} };
+      data.forEach((row) => { next[row.id] = row.data || {}; });
+      setCatalog(next);
+    } else {
+      setCatalog({ school: {}, entrance: {} });
+    }
+  }
+
   useEffect(() => {
-    if (session) loadNotes();
+    if (session) {
+      loadNotes();
+      loadCatalog();
+    }
   }, [session, view]);
 
-  if (session === undefined) {
+  if (session === undefined || (session && catalog === null)) {
     return (
       <div style={{ minHeight: "100vh", background: COLORS.paperDark, display: "flex", alignItems: "center", justifyContent: "center", color: COLORS.inkSoft, fontFamily: "'Work Sans', sans-serif" }}>
         <style>{FONTS}</style>Loading...
@@ -253,8 +269,8 @@ export default function NextGenNotes() {
     return <AdminPanel onBack={() => setView("store")} />;
   }
 
-  const catalogRoot = nav?.category === "school" ? SCHOOL_CATALOG : nav?.category === "entrance" ? ENTRANCE_CATALOG : null;
-  const subjectsObj = nav?.key && nav?.medium ? catalogRoot[nav.key][nav.medium] : null;
+  const catalogRoot = nav?.category === "school" ? catalog.school : nav?.category === "entrance" ? catalog.entrance : null;
+  const subjectsObj = nav?.key && nav?.medium && catalogRoot?.[nav.key] ? catalogRoot[nav.key][nav.medium] : null;
 
   function findNotes(category, key, medium, subject, chapter) {
     return notes.filter((n) => n.category === category && n.key === key && n.medium === medium && n.subject === subject && n.chapter === chapter);
@@ -281,6 +297,7 @@ export default function NextGenNotes() {
         onPickMedium={(category, key, medium) => setNav({ category, key, medium, subject: null, chapter: null })}
         isAdmin={isAdmin}
         onOpenAdmin={() => setView("admin")}
+        catalog={catalog}
       />
 
       {!nav && (
@@ -301,17 +318,21 @@ export default function NextGenNotes() {
         </section>
       )}
 
-      {nav && !nav.subject && (
+      {nav && !nav.subject && subjectsObj && (
         <section style={{ maxWidth: 780, margin: "0 auto", padding: "40px 24px 70px" }}>
           <p style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: COLORS.margin, marginBottom: 6 }}>{nav.key} · {nav.medium}</p>
           <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 24, margin: "0 0 20px", color: COLORS.ink }}>Subjects</h2>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 14 }}>
-            {Object.keys(subjectsObj).map((subject) => (
-              <button key={subject} onClick={() => setNav({ ...nav, subject, chapter: null })} style={{ background: COLORS.paper, border: `1.5px solid ${COLORS.paperDark}`, borderLeft: `4px solid ${COLORS.margin}`, borderRadius: 6, padding: "16px", textAlign: "left", cursor: "pointer", fontFamily: "'Kalam', cursive", fontSize: 17, fontWeight: 700, color: COLORS.ink }}>
-                {subject}
-              </button>
-            ))}
-          </div>
+          {Object.keys(subjectsObj).length === 0 ? (
+            <AvailableSoon />
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 14 }}>
+              {Object.keys(subjectsObj).map((subject) => (
+                <button key={subject} onClick={() => setNav({ ...nav, subject, chapter: null })} style={{ background: COLORS.paper, border: `1.5px solid ${COLORS.paperDark}`, borderLeft: `4px solid ${COLORS.margin}`, borderRadius: 6, padding: "16px", textAlign: "left", cursor: "pointer", fontFamily: "'Kalam', cursive", fontSize: 17, fontWeight: 700, color: COLORS.ink }}>
+                  {subject}
+                </button>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
@@ -324,13 +345,17 @@ export default function NextGenNotes() {
             </button>
           </p>
           <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 24, margin: "0 0 20px", color: COLORS.ink }}>Chapters</h2>
-          <div style={{ display: "grid", gap: 10 }}>
-            {subjectsObj[nav.subject].map((chapter) => (
-              <button key={chapter} onClick={() => setNav({ ...nav, chapter })} style={{ display: "block", width: "100%", textAlign: "left", background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 6, padding: "13px 16px", fontFamily: "'Work Sans', sans-serif", fontSize: 14.5, color: COLORS.ink, cursor: "pointer" }}>
-                {chapter}
-              </button>
-            ))}
-          </div>
+          {(subjectsObj[nav.subject] || []).length === 0 ? (
+            <AvailableSoon />
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {subjectsObj[nav.subject].map((chapter) => (
+                <button key={chapter} onClick={() => setNav({ ...nav, chapter })} style={{ display: "block", width: "100%", textAlign: "left", background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 6, padding: "13px 16px", fontFamily: "'Work Sans', sans-serif", fontSize: 14.5, color: COLORS.ink, cursor: "pointer" }}>
+                  {chapter}
+                </button>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
