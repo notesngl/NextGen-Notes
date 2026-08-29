@@ -21,7 +21,11 @@ import { COLORS, FONTS } from "./siteConfig";
 
   "notes" table needs these columns:
     id, category, key, medium, subject, chapter, title, description,
-    pages, file_url, whatsapp_link, created_at
+    pages, file_url, full_pdf_link, whatsapp_link, created_at
+
+  full_pdf_link = optional Google Drive link to the COMPLETE note,
+  unlocked for free on the site by spending coins (see App.jsx /
+  COIN_COST). Separate from file_url, which is the free preview link.
 */
 
 function field(label, children) {
@@ -44,7 +48,7 @@ const inputStyle = {
   background: COLORS.paper,
 };
 
-const emptyForm = { medium: "", category: "school", key: "", subject: "", chapter: "", title: "", description: "", pages: "", driveLink: "", whatsappLink: "" };
+const emptyForm = { medium: "", category: "school", key: "", subject: "", chapter: "", title: "", description: "", pages: "", driveLink: "", fullPdfLink: "", whatsappLink: "" };
 
 const btnStyle = {
   background: COLORS.paper,
@@ -70,7 +74,7 @@ function NotesTab() {
   const [message, setMessage] = useState("");
   const [existingNotes, setExistingNotes] = useState([]);
 
-  const { medium, category, key, subject, chapter, title, description, pages, driveLink, whatsappLink } = form;
+  const { medium, category, key, subject, chapter, title, description, pages, driveLink, fullPdfLink, whatsappLink } = form;
   function set(fieldName, value) {
     setForm((f) => ({ ...f, [fieldName]: value }));
   }
@@ -103,6 +107,7 @@ function NotesTab() {
       description: note.description || "",
       pages: note.pages != null ? String(note.pages) : "",
       driveLink: note.file_url || "",
+      fullPdfLink: note.full_pdf_link || "",
       whatsappLink: note.whatsapp_link || "",
     });
     setMessage("");
@@ -129,6 +134,7 @@ function NotesTab() {
       description: description.trim(),
       pages: pages ? parseInt(pages, 10) : null,
       file_url: driveLink.trim(),
+      full_pdf_link: fullPdfLink.trim() || null,
       whatsapp_link: whatsappLink.trim() || null,
     };
     try {
@@ -213,6 +219,13 @@ function NotesTab() {
         ))}
         <p style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: -8, marginBottom: 14 }}>
           Drive file ko "Anyone with the link can view" set karke uska link yahan paste karein.
+        </p>
+
+        {field("Full PDF Google Drive link (coins se unlock hoga, free)", (
+          <input value={fullPdfLink} onChange={(e) => set("fullPdfLink", e.target.value)} style={inputStyle} placeholder="https://drive.google.com/file/d/..." />
+        ))}
+        <p style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: -8, marginBottom: 14 }}>
+          Ye link bhi "Anyone with the link can view" hona chahiye. User ke paas coins hone par ye link naye tab me khulega — bina WhatsApp/payment ke.
         </p>
 
         {field("WhatsApp Business product link (optional)", (

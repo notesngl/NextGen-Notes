@@ -16,7 +16,22 @@ import AdminPanel from "./AdminPanel";
     }
   Edited entirely from the Admin Panel -> Manage Menu tab.
   See catalog_migration_v2.sql for the one-time table setup.
+
+  COIN + REFERRAL SYSTEM
+  - "profiles" table: id (=auth user id), coins, referred_by, created_at.
+  - Signing in calls register_profile(referrer_id) RPC once — creates the
+    profile row, credits welcome bonus if referred, credits referrer.
+  - Each note can optionally have a "full_pdf_link" (Google Drive link,
+    separate from the free-preview file_url). If present, a "Open with
+    coins" button shows; clicking spends COIN_COST coins via the
+    redeem_note RPC and opens the link.
+  - Refer modal shows the user's personal referral link
+    (?ref=<their user id>) and current coin balance.
+  See the SQL setup for profiles table + register_profile + redeem_note
+  functions (run once in Supabase SQL editor).
 */
+
+const COIN_COST = 10; // coins required to unlock one note's full PDF
 
 function Stamp({ size = 84 }) {
   return (
@@ -82,7 +97,7 @@ function toEmbedUrl(url) {
 }
 
 /* PDF opens inline on the page */
-function PdfViewer({ note }) {
+function PdfViewer({ note, profile, onRedeem }) {
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
       <RuledCard style={{ padding: "16px 14px" }}>
@@ -115,8 +130,64 @@ function PdfViewer({ note }) {
             📩 Poori Notes Kharidein (WhatsApp)
           </a>
         )}
+        {note.full_pdf_link && (
+          <button
+            onClick={() => onRedeem(note)}
+            style={{
+              display: "block",
+              width: "100%",
+              textAlign: "center",
+              marginTop: 10,
+              background: COLORS.gold,
+              color: COLORS.ink,
+              border: "none",
+              borderRadius: 6,
+              padding: "11px 16px",
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "'Kalam', cursive",
+            }}
+          >
+            🪙 Coins Se Kholein ({COIN_COST} coins — Full PDF Free){profile ? ` · Aapke paas: ${profile.coins}` : ""}
+          </button>
+        )}
       </RuledCard>
       <TornEdge />
+    </div>
+  );
+}
+
+/* Modal: shows coin balance + personal referral link to share */
+function ReferModal({ open, onClose, coins, refLink }) {
+  const [copied, setCopied] = useState(false);
+  if (!open) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(38,50,74,0.55)" }} />
+      <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "24px 20px", maxWidth: 380, width: "100%" }}>
+        <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, margin: "0 0 8px" }}>Refer & Earn 🪙</h3>
+        <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 14 }}>
+          Apna link doston ko bhejo. Wo is link se sign up karega to aapko 20 coins milenge, aur use 5 coins welcome bonus milega.
+        </p>
+        <p style={{ fontSize: 13, marginBottom: 14 }}>Aapke coins: <b>{coins}</b></p>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <input
+            readOnly
+            value={refLink}
+            style={{ flex: 1, padding: "9px 10px", fontSize: 12, borderRadius: 6, border: `1.5px solid ${COLORS.inkSoft}55`, background: COLORS.paperDark, color: COLORS.ink }}
+          />
+          <button
+            onClick={() => { navigator.clipboard.writeText(refLink); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+            style={{ background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "9px 12px", fontSize: 13, cursor: "pointer", fontWeight: 700 }}
+          >
+            {copied ? "Copied!" : "Copy"}
+          </button>
+        </div>
+        <button onClick={onClose} style={{ width: "100%", background: "none", border: `1.5px solid ${COLORS.inkSoft}55`, borderRadius: 6, padding: "10px", fontSize: 13.5, cursor: "pointer", color: COLORS.ink }}>
+          Close
+        </button>
+      </div>
     </div>
   );
 }
@@ -228,11 +299,20 @@ export default function NextGenNotes() {
   const [view, setView] = useState("store"); // "store" | "admin"
   const [notes, setNotes] = useState([]);
   const [catalog, setCatalog] = useState(null); // { "Hindi Medium": {school:{}, entrance:{}}, "English Medium": {...} }
+  const [profile, setProfile] = useState(null); // { id, coins, referred_by, created_at }
+  const [referOpen, setReferOpen] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
     const { data: listener } = supabase.auth.onAuthStateChange((_e, sess) => setSession(sess));
     return () => listener.subscription.unsubscribe();
+  }, []);
+
+  // Capture ?ref=<user-id> from a shared referral link, stash it until sign-in
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ref = params.get("ref");
+    if (ref) localStorage.setItem("ngn_ref", ref);
   }, []);
 
   async function loadNotes() {
@@ -245,10 +325,36 @@ export default function NextGenNotes() {
     setCatalog(!error && data ? data.data || {} : {});
   }
 
+  async function loadProfile() {
+    const refCode = localStorage.getItem("ngn_ref");
+    const { data, error } = await supabase.rpc("register_profile", { referrer_id: refCode || null });
+    if (!error && data) {
+      setProfile(data);
+      localStorage.removeItem("ngn_ref");
+    }
+  }
+
+  async function handleRedeem(note) {
+    if (!profile) return;
+    if (profile.coins < COIN_COST) {
+      alert(`Aapke paas sirf ${profile.coins} coins hain. ${COIN_COST} coins chahiye. Refer karke coins kamayein!`);
+      setReferOpen(true);
+      return;
+    }
+    const { data, error } = await supabase.rpc("redeem_note", { p_note_id: note.id, p_cost: COIN_COST });
+    if (error) {
+      alert("Kuch error hua: " + error.message);
+      return;
+    }
+    setProfile((p) => ({ ...p, coins: data }));
+    window.open(note.full_pdf_link, "_blank", "noopener,noreferrer");
+  }
+
   useEffect(() => {
     if (session) {
       loadNotes();
       loadCatalog();
+      loadProfile();
     }
   }, [session, view]);
 
@@ -283,6 +389,9 @@ export default function NextGenNotes() {
           <span style={{ fontFamily: "'Kalam', cursive", fontWeight: 700, fontSize: 22, color: COLORS.gold }}>{TUITION_NAME}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <button onClick={() => setReferOpen(true)} style={{ background: "none", border: `1.5px solid ${COLORS.gold}88`, color: COLORS.gold, borderRadius: 6, padding: "6px 10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+            🪙 {profile?.coins ?? 0}
+          </button>
           <button onClick={() => supabase.auth.signOut()} style={{ background: "none", border: "none", color: `${COLORS.paper}99`, fontSize: 13, cursor: "pointer" }}>Sign out</button>
           <button onClick={() => setDrawerOpen(true)} aria-label="Open menu" style={{ background: "transparent", border: `1.5px solid ${COLORS.paper}66`, color: COLORS.paper, borderRadius: 6, padding: "8px 12px", fontSize: 18, cursor: "pointer", lineHeight: 1 }}>☰</button>
         </div>
@@ -296,6 +405,13 @@ export default function NextGenNotes() {
         isAdmin={isAdmin}
         onOpenAdmin={() => setView("admin")}
         catalog={catalog}
+      />
+
+      <ReferModal
+        open={referOpen}
+        onClose={() => setReferOpen(false)}
+        coins={profile?.coins ?? 0}
+        refLink={`${window.location.origin}${window.location.pathname}?ref=${session.user.id}`}
       />
 
       {!nav && (
@@ -370,7 +486,7 @@ export default function NextGenNotes() {
             const chapterNotes = findNotes(nav.category, nav.key, nav.medium, nav.subject, nav.chapter);
             return chapterNotes.length > 0 ? (
               <div style={{ display: "grid", gap: 20 }}>
-                {chapterNotes.map((n) => <PdfViewer key={n.id} note={n} />)}
+                {chapterNotes.map((n) => <PdfViewer key={n.id} note={n} profile={profile} onRedeem={handleRedeem} />)}
               </div>
             ) : (
               <AvailableSoon />
