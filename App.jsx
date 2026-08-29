@@ -51,9 +51,12 @@ const COIN_COST = 10; // coins required to unlock one note's full PDF
 // Buy Coins config — edit these anytime
 const BUY_COINS_WHATSAPP_NUMBER = "916206549468"; // country code + number, no +/spaces
 const COIN_PACKAGES = [
-  { coins: 50, price: 20 },
-  { coins: 120, price: 40 },
-  { coins: 300, price: 90 },
+  { coins: 5, price: 5 },
+  { coins: 11, price: 10 },
+  { coins: 23, price: 20 },
+  { coins: 60, price: 50 },
+  { coins: 130, price: 100 },
+  { coins: 300, price: 200 },
 ];
 
 function todayStr() {
