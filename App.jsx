@@ -17,21 +17,37 @@ import AdminPanel from "./AdminPanel";
   Edited entirely from the Admin Panel -> Manage Menu tab.
   See catalog_migration_v2.sql for the one-time table setup.
 
-  COIN + REFERRAL SYSTEM
-  - "profiles" table: id (=auth user id), coins, referred_by, created_at.
+  COIN + REFERRAL + DAILY LOGIN STREAK SYSTEM
+  - "profiles" table: id (=auth user id), coins, referred_by,
+    last_login_date, current_streak, created_at.
   - Signing in calls register_profile(referrer_id) RPC once — creates the
     profile row, credits welcome bonus if referred, credits referrer.
+  - If today's bonus hasn't been claimed yet (profile.last_login_date is
+    not today), a "Claim your daily bonus" popup opens automatically.
+    The student must tap "Claim" — only then does claim_daily_login_bonus()
+    RPC run: +1 coin for a normal day, or +9 coins on the 7th continuous
+    day (then the streak resets). Each claim is recorded in
+    "login_history".
   - Each note can optionally have a "full_pdf_link" (Google Drive link,
     separate from the free-preview file_url). If present, a "Open with
     coins" button shows; clicking spends COIN_COST coins via the
     redeem_note RPC and opens the link.
   - Refer modal shows the user's personal referral link
     (?ref=<their user id>) and current coin balance.
-  See the SQL setup for profiles table + register_profile + redeem_note
-  functions (run once in Supabase SQL editor).
+  - Login History page (from the ☰ menu) lists login_history rows for
+    the signed-in user: date, which day of the streak, coins earned.
+  See the SQL setup (profiles/login_history tables + register_profile +
+  redeem_note + claim_daily_login_bonus functions) — run once in the
+  Supabase SQL editor. No SQL changes needed for the claim-popup UI.
 */
 
 const COIN_COST = 10; // coins required to unlock one note's full PDF
+
+function todayStr() {
+  // local YYYY-MM-DD, matches how login_history.login_date reads back
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 function Stamp({ size = 84 }) {
   return (
@@ -168,7 +184,7 @@ function ReferModal({ open, onClose, coins, refLink }) {
       <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "24px 20px", maxWidth: 380, width: "100%" }}>
         <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, margin: "0 0 8px" }}>Refer & Earn 🪙</h3>
         <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 14 }}>
-          Apna link doston ko bhejo. Wo is link se sign up karega to aapko 20 coins milenge, aur use 5 coins welcome bonus milega.
+          Apna link doston ko bhejo. Wo is link se sign up karega to aapko 30 coins milenge, aur use 5 coins welcome bonus milega.
         </p>
         <p style={{ fontSize: 13, marginBottom: 14 }}>Aapke coins: <b>{coins}</b></p>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
@@ -192,10 +208,142 @@ function ReferModal({ open, onClose, coins, refLink }) {
   );
 }
 
+/* Popup: student must tap Claim to receive today's login bonus.
+   previewDay/previewBonus are a best-effort guess (server has final say);
+   after claiming, the real amount earned is shown. */
+function DailyBonusModal({ open, onClose, previewDay, previewBonus, claiming, claimed, earnedCoins, onClaim }) {
+  if (!open) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ position: "absolute", inset: 0, background: "rgba(38,50,74,0.6)" }} />
+      <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "26px 22px", maxWidth: 360, width: "100%", textAlign: "center" }}>
+        {!claimed ? (
+          <>
+            <div style={{ fontSize: 40, marginBottom: 10 }}>🎁</div>
+            <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 21, margin: "0 0 8px" }}>Aaj ka Login Bonus</h3>
+            <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 4 }}>
+              Streak — Din {previewDay} / 7
+            </p>
+            <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 18 }}>
+              {previewBonus >= 9
+                ? "🎉 Aaj 7th continuous din hai — bada bonus milega!"
+                : "Roz login karke coins kamayein. 7th continuous din +9 coins!"}
+            </p>
+            <button
+              onClick={onClaim}
+              disabled={claiming}
+              style={{ width: "100%", background: COLORS.gold, color: COLORS.ink, border: "none", borderRadius: 6, padding: "13px 16px", fontSize: 15.5, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive" }}
+            >
+              {claiming ? "Claim ho raha hai..." : `🪙 Claim Karo (+${previewBonus} coins)`}
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 40, marginBottom: 10 }}>✅</div>
+            <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 21, margin: "0 0 8px" }}>Bonus Mil Gaya!</h3>
+            <p style={{ fontSize: 15, color: COLORS.ink, marginBottom: 18 }}>
+              +{earnedCoins} 🪙 coins add ho gaye.
+            </p>
+            <button
+              onClick={onClose}
+              style={{ width: "100%", background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "12px 16px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive" }}
+            >
+              Theek hai
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* Page: lists the signed-in user's daily login history + streak progress */
+function LoginHistoryPage({ onBack, profile }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("login_history")
+        .select("*")
+        .order("login_date", { ascending: false })
+        .limit(60);
+      if (!error && data) setRows(data);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink }}>
+      <style>{FONTS}</style>
+      <header style={{ background: COLORS.ink, color: COLORS.paper, padding: "18px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontFamily: "'Kalam', cursive", fontWeight: 700, fontSize: 20, color: COLORS.gold }}>Login History</span>
+        <button onClick={onBack} style={{ background: "transparent", border: `1.5px solid ${COLORS.paper}66`, color: COLORS.paper, borderRadius: 6, padding: "8px 14px", fontSize: 13, cursor: "pointer" }}>
+          ← Back to site
+        </button>
+      </header>
+
+      <section style={{ maxWidth: 560, margin: "0 auto", padding: "32px 20px 60px" }}>
+        <RuledCard style={{ padding: "18px 16px", marginBottom: 22 }}>
+          <p style={{ fontSize: 13, color: COLORS.inkSoft, margin: "0 0 4px" }}>Abhi ka streak</p>
+          <p style={{ fontFamily: "'Kalam', cursive", fontSize: 24, fontWeight: 700, margin: 0 }}>
+            Din {profile?.current_streak ?? 0} / 7
+          </p>
+          <p style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 6 }}>
+            Roz login karke bonus claim karo — +1 coin, 7th continuous din +9 coins. Ek din miss hua to streak Din 1 se shuru hoga.
+          </p>
+        </RuledCard>
+
+        <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 18, margin: "0 0 12px" }}>Login records</h3>
+
+        {loading ? (
+          <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
+        ) : rows.length === 0 ? (
+          <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Abhi koi login record nahi hai.</p>
+        ) : (
+          <div style={{ display: "grid", gap: 8 }}>
+            {rows.map((r) => {
+              const isBonusDay = r.day_number >= 7;
+              return (
+                <div
+                  key={r.id}
+                  style={{
+                    background: COLORS.paper,
+                    border: `1px solid ${isBonusDay ? COLORS.gold : COLORS.paperDark}`,
+                    borderRadius: 6,
+                    padding: "10px 12px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 10,
+                  }}
+                >
+                  <div>
+                    <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600 }}>
+                      {new Date(r.login_date + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
+                    </p>
+                    <p style={{ margin: 0, fontSize: 11.5, color: COLORS.inkSoft }}>Streak din {r.day_number}</p>
+                  </div>
+                  <span style={{ fontFamily: "'Kalam', cursive", fontWeight: 700, fontSize: 14, color: isBonusDay ? COLORS.stampRed : COLORS.margin, flexShrink: 0 }}>
+                    +{r.bonus_coins} 🪙{isBonusDay ? " (7 din bonus!)" : ""}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 /* Menu: Medium (Hindi/English) -> School/Entrance Exam -> Class or Exam.
    Built live from the "catalog" prop (fetched from Supabase's
    site_catalog table, id='catalog'). */
-function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, catalog }) {
+function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, catalog }) {
   const [openMedium, setOpenMedium] = useState(null);
   const [openBranch, setOpenBranch] = useState(null);
 
@@ -213,6 +361,10 @@ function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, cat
         <div style={{ padding: "10px 6px 30px" }}>
           <button onClick={() => { onHome(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
             🏠 Home
+          </button>
+
+          <button onClick={() => { onOpenLoginHistory(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
+            📅 Login History
           </button>
 
           {Object.keys(catalog || {}).map((medium) => (
@@ -296,11 +448,17 @@ export default function NextGenNotes() {
   const [session, setSession] = useState(undefined);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [nav, setNav] = useState(null); // { medium, category, key, subject, chapter }
-  const [view, setView] = useState("store"); // "store" | "admin"
+  const [view, setView] = useState("store"); // "store" | "admin" | "login-history"
   const [notes, setNotes] = useState([]);
   const [catalog, setCatalog] = useState(null); // { "Hindi Medium": {school:{}, entrance:{}}, "English Medium": {...} }
-  const [profile, setProfile] = useState(null); // { id, coins, referred_by, created_at }
+  const [profile, setProfile] = useState(null); // { id, coins, referred_by, current_streak, last_login_date, created_at }
   const [referOpen, setReferOpen] = useState(false);
+
+  // Daily bonus claim popup state
+  const [dailyBonusOpen, setDailyBonusOpen] = useState(false);
+  const [dailyBonusClaiming, setDailyBonusClaiming] = useState(false);
+  const [dailyBonusClaimed, setDailyBonusClaimed] = useState(false);
+  const [dailyBonusEarned, setDailyBonusEarned] = useState(0);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -328,16 +486,56 @@ export default function NextGenNotes() {
   async function loadProfile() {
     const refCode = localStorage.getItem("ngn_ref");
     const { data, error } = await supabase.rpc("register_profile", { referrer_id: refCode || null });
-    if (!error && data) {
-      setProfile(data);
-      localStorage.removeItem("ngn_ref");
+    if (error || !data) return;
+    localStorage.removeItem("ngn_ref");
+    setProfile(data);
+
+    // Today's bonus not claimed yet -> open the claim popup (student taps to claim)
+    if (!data.last_login_date || data.last_login_date !== todayStr()) {
+      setDailyBonusClaimed(false);
+      setDailyBonusEarned(0);
+      setDailyBonusOpen(true);
     }
   }
+
+  async function handleClaimDailyBonus() {
+    setDailyBonusClaiming(true);
+    const before = profile?.coins ?? 0;
+    const { data: bonusData, error } = await supabase.rpc("claim_daily_login_bonus");
+    setDailyBonusClaiming(false);
+    if (error || !bonusData) {
+      alert("Kuch error hua, dobara try karein.");
+      return;
+    }
+    setProfile(bonusData);
+    setDailyBonusEarned(bonusData.coins - before);
+    setDailyBonusClaimed(true);
+  }
+
+  // Best-effort preview of what tapping Claim will give — server has final say
+  function dailyBonusPreview() {
+    const streak = profile?.current_streak ?? 0;
+    const last = profile?.last_login_date;
+    const y = new Date();
+    y.setDate(y.getDate() - 1);
+    const yesterdayStr = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+    const nextDay = last === yesterdayStr ? streak + 1 : 1;
+    const nextBonus = nextDay >= 7 ? 9 : 1;
+    return { nextDay, nextBonus };
+  }
+
+  useEffect(() => {
+    if (session) {
+      loadNotes();
+      loadCatalog();
+      loadProfile();
+    }
+  }, [session, view]);
 
   async function handleRedeem(note) {
     if (!profile) return;
     if (profile.coins < COIN_COST) {
-      alert(`Aapke paas sirf ${profile.coins} coins hain. ${COIN_COST} coins chahiye. Refer karke coins kamayein!`);
+      alert(`Aapke paas sirf ${profile.coins} coins hain. ${COIN_COST} coins chahiye. Refer karke ya roz login bonus claim karke coins kamayein!`);
       setReferOpen(true);
       return;
     }
@@ -349,14 +547,6 @@ export default function NextGenNotes() {
     setProfile((p) => ({ ...p, coins: data }));
     window.open(note.full_pdf_link, "_blank", "noopener,noreferrer");
   }
-
-  useEffect(() => {
-    if (session) {
-      loadNotes();
-      loadCatalog();
-      loadProfile();
-    }
-  }, [session, view]);
 
   if (session === undefined || (session && catalog === null)) {
     return (
@@ -373,12 +563,18 @@ export default function NextGenNotes() {
     return <AdminPanel onBack={() => setView("store")} />;
   }
 
+  if (view === "login-history") {
+    return <LoginHistoryPage onBack={() => setView("store")} profile={profile} />;
+  }
+
   const subjectsObj = nav?.key ? catalog?.[nav.medium]?.[nav.category]?.[nav.key] : null;
   const branchLabel = (b) => (b === "school" ? "School" : "Entrance Exam");
 
   function findNotes(category, key, medium, subject, chapter) {
     return notes.filter((n) => n.category === category && n.key === key && n.medium === medium && n.subject === subject && n.chapter === chapter);
   }
+
+  const { nextDay, nextBonus } = dailyBonusPreview();
 
   return (
     <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink }}>
@@ -404,6 +600,7 @@ export default function NextGenNotes() {
         onPickKey={(medium, category, key) => setNav({ medium, category, key, subject: null, chapter: null })}
         isAdmin={isAdmin}
         onOpenAdmin={() => setView("admin")}
+        onOpenLoginHistory={() => setView("login-history")}
         catalog={catalog}
       />
 
@@ -412,6 +609,17 @@ export default function NextGenNotes() {
         onClose={() => setReferOpen(false)}
         coins={profile?.coins ?? 0}
         refLink={`${window.location.origin}${window.location.pathname}?ref=${session.user.id}`}
+      />
+
+      <DailyBonusModal
+        open={dailyBonusOpen}
+        onClose={() => setDailyBonusOpen(false)}
+        previewDay={nextDay}
+        previewBonus={nextBonus}
+        claiming={dailyBonusClaiming}
+        claimed={dailyBonusClaimed}
+        earnedCoins={dailyBonusEarned}
+        onClaim={handleClaimDailyBonus}
       />
 
       {!nav && (
