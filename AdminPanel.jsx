@@ -3,10 +3,12 @@ import { supabase } from "./supabaseClient";
 import { COLORS, FONTS } from "./siteConfig";
 
 /*
-  Admin Panel — two tabs:
-    1. Notes    — add/edit/delete notes
-    2. Menu     — add/rename/delete School/Entrance -> Class/Exam ->
-                  Subject -> Chapter, under each Medium.
+  Admin Panel — three tabs:
+    1. Notes      — add/edit/delete notes
+    2. Menu       — add/rename/delete School/Entrance -> Class/Exam ->
+                    Subject -> Chapter, under each Medium.
+    3. Add Coins  — credit coins to any student by their Google account
+                    email (used for manual WhatsApp "Buy Coins" payments).
 
   Menu data lives in Supabase table "site_catalog", single row with
   id='catalog', shape:
@@ -26,6 +28,10 @@ import { COLORS, FONTS } from "./siteConfig";
   full_pdf_link = optional Google Drive link to the COMPLETE note,
   unlocked for free on the site by spending coins (see App.jsx /
   COIN_COST). Separate from file_url, which is the free preview link.
+
+  Add Coins tab calls the admin_add_coins(target_email, amount) Postgres
+  function (security definer, checks the caller is ADMIN_EMAIL) — the
+  student must have signed in at least once with that email already.
 */
 
 function field(label, children) {
@@ -502,10 +508,80 @@ function ManageMenuTab() {
   );
 }
 
+/* ---------- Tab 3: Add Coins ---------- */
+
+function AddCoinsTab() {
+  const [email, setEmail] = useState("");
+  const [amount, setAmount] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [lastResult, setLastResult] = useState(null); // { email, coins }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setMessage("");
+    const trimmedEmail = email.trim();
+    const amt = parseInt(amount, 10);
+    if (!trimmedEmail || !amt) {
+      setMessage("Email aur coins (number me) dono zaroori hain.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const { data, error } = await supabase.rpc("admin_add_coins", { target_email: trimmedEmail, amount: amt });
+      if (error) throw error;
+      setLastResult({ email: trimmedEmail, coins: data.coins });
+      setMessage(`✓ ${amt} coins add ho gaye. Ab ${trimmedEmail} ke paas total ${data.coins} coins hain.`);
+      setEmail("");
+      setAmount("");
+    } catch (err) {
+      setMessage("Error: " + err.message);
+    }
+    setSaving(false);
+  }
+
+  return (
+    <section style={{ maxWidth: 480, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Add Coins</h2>
+      <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
+        Student ke Google account email daalein aur kitne coins add karne hain — turant unke account mein credit ho jayenge.
+        Student ne pehle site pe kam se kam ek baar Google se sign-in kiya hua hona chahiye.
+      </p>
+
+      <form onSubmit={handleSubmit} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "18px 16px" }}>
+        {field("Student ka email", (
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} placeholder="student@gmail.com" />
+        ))}
+        {field("Kitne coins add karne hain", (
+          <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} style={inputStyle} placeholder="e.g. 50" />
+        ))}
+        <button
+          type="submit"
+          disabled={saving}
+          style={{ width: "100%", background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "12px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive" }}
+        >
+          {saving ? "Adding..." : "🪙 Add Coins"}
+        </button>
+        {message && (
+          <p style={{ fontSize: 13, color: message.startsWith("Error") ? COLORS.stampRed : COLORS.ink, marginTop: 12 }}>{message}</p>
+        )}
+      </form>
+
+      {lastResult && (
+        <div style={{ marginTop: 18, background: COLORS.paper, border: `1.5px solid ${COLORS.gold}88`, borderRadius: 8, padding: "14px 16px" }}>
+          <p style={{ margin: 0, fontSize: 13.5 }}>
+            Last update: <b>{lastResult.email}</b> — ab total <b>{lastResult.coins} coins</b>
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ---------- Shell with tab switcher ---------- */
 
 export default function AdminPanel({ onBack }) {
-  const [tab, setTab] = useState("notes"); // "notes" | "menu"
+  const [tab, setTab] = useState("notes"); // "notes" | "menu" | "coins"
 
   return (
     <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink }}>
@@ -517,12 +593,15 @@ export default function AdminPanel({ onBack }) {
         </button>
       </header>
 
-      <div style={{ display: "flex", gap: 8, maxWidth: 700, margin: "20px auto 0", padding: "0 20px" }}>
+      <div style={{ display: "flex", gap: 8, maxWidth: 700, margin: "20px auto 0", padding: "0 20px", flexWrap: "wrap" }}>
         <button onClick={() => setTab("notes")} style={tab === "notes" ? btnActiveStyle : btnStyle}>📝 Notes</button>
         <button onClick={() => setTab("menu")} style={tab === "menu" ? btnActiveStyle : btnStyle}>📂 Manage Menu</button>
+        <button onClick={() => setTab("coins")} style={tab === "coins" ? btnActiveStyle : btnStyle}>🪙 Add Coins</button>
       </div>
 
-      {tab === "notes" ? <NotesTab /> : <ManageMenuTab />}
+      {tab === "notes" && <NotesTab />}
+      {tab === "menu" && <ManageMenuTab />}
+      {tab === "coins" && <AddCoinsTab />}
     </div>
   );
 }

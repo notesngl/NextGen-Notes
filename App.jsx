@@ -17,7 +17,7 @@ import AdminPanel from "./AdminPanel";
   Edited entirely from the Admin Panel -> Manage Menu tab.
   See catalog_migration_v2.sql for the one-time table setup.
 
-  COIN + REFERRAL + DAILY LOGIN STREAK SYSTEM
+  COIN + REFERRAL + DAILY LOGIN STREAK + BUY COINS SYSTEM
   - "profiles" table: id (=auth user id), coins, referred_by,
     last_login_date, current_streak, created_at.
   - Signing in calls register_profile(referrer_id) RPC once — creates the
@@ -32,16 +32,29 @@ import AdminPanel from "./AdminPanel";
     separate from the free-preview file_url). If present, a "Open with
     coins" button shows; clicking spends COIN_COST coins via the
     redeem_note RPC and opens the link.
-  - Refer modal shows the user's personal referral link
-    (?ref=<their user id>) and current coin balance.
+  - "🎁 Refer & Earn" and "🪙 Buy Coins" are both reachable directly from
+    the ☰ menu now (Refer was previously only reachable via the header
+    coin badge — that shortcut still works too).
+  - Buy Coins has no in-app payment gateway: it shows fixed coin
+    packages, and tapping one opens WhatsApp (BUY_COINS_WHATSAPP_NUMBER)
+    with a prefilled message — admin manually credits coins afterwards
+    from Admin Panel -> Add Coins (by the student's email).
   - Login History page (from the ☰ menu) lists login_history rows for
     the signed-in user: date, which day of the streak, coins earned.
   See the SQL setup (profiles/login_history tables + register_profile +
-  redeem_note + claim_daily_login_bonus functions) — run once in the
-  Supabase SQL editor. No SQL changes needed for the claim-popup UI.
+  redeem_note + claim_daily_login_bonus + admin_add_coins functions) —
+  run once in the Supabase SQL editor.
 */
 
 const COIN_COST = 10; // coins required to unlock one note's full PDF
+
+// Buy Coins config — edit these anytime
+const BUY_COINS_WHATSAPP_NUMBER = "916206549468"; // country code + number, no +/spaces
+const COIN_PACKAGES = [
+  { coins: 50, price: 20 },
+  { coins: 120, price: 40 },
+  { coins: 300, price: 90 },
+];
 
 function todayStr() {
   // local YYYY-MM-DD, matches how login_history.login_date reads back
@@ -208,6 +221,57 @@ function ReferModal({ open, onClose, coins, refLink }) {
   );
 }
 
+/* Modal: fixed coin packages -> WhatsApp with a prefilled message.
+   No in-app payment; admin manually credits coins after payment via
+   Admin Panel -> Add Coins. */
+function BuyCoinsModal({ open, onClose, userEmail }) {
+  if (!open) return null;
+
+  function buyLink(pkg) {
+    const msg = `Hi! Main ${pkg.coins} coins kharidna chahta/chahti hoon (₹${pkg.price}). Mera email: ${userEmail}`;
+    return `https://wa.me/${BUY_COINS_WHATSAPP_NUMBER}?text=${encodeURIComponent(msg)}`;
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(38,50,74,0.55)" }} />
+      <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "24px 20px", maxWidth: 380, width: "100%" }}>
+        <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, margin: "0 0 8px" }}>Buy Coins 🪙</h3>
+        <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 16 }}>
+          Package choose karke WhatsApp par payment confirm karein — coins jaldi hi aapke account mein add ho jayenge.
+        </p>
+        <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
+          {COIN_PACKAGES.map((pkg) => (
+            <a
+              key={pkg.coins}
+              href={buyLink(pkg)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                background: COLORS.paperDark,
+                border: `1.5px solid ${COLORS.gold}88`,
+                borderRadius: 8,
+                padding: "13px 16px",
+                textDecoration: "none",
+                color: COLORS.ink,
+              }}
+            >
+              <span style={{ fontFamily: "'Kalam', cursive", fontWeight: 700, fontSize: 16 }}>🪙 {pkg.coins} coins</span>
+              <span style={{ background: "#25D366", color: "#fff", borderRadius: 6, padding: "7px 12px", fontSize: 13, fontWeight: 700 }}>₹{pkg.price} · WhatsApp</span>
+            </a>
+          ))}
+        </div>
+        <button onClick={onClose} style={{ width: "100%", background: "none", border: `1.5px solid ${COLORS.inkSoft}55`, borderRadius: 6, padding: "10px", fontSize: 13.5, cursor: "pointer", color: COLORS.ink }}>
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* Popup: student must tap Claim to receive today's login bonus.
    previewDay/previewBonus are a best-effort guess (server has final say);
    after claiming, the real amount earned is shown. */
@@ -343,7 +407,7 @@ function LoginHistoryPage({ onBack, profile }) {
 /* Menu: Medium (Hindi/English) -> School/Entrance Exam -> Class or Exam.
    Built live from the "catalog" prop (fetched from Supabase's
    site_catalog table, id='catalog'). */
-function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, catalog }) {
+function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, catalog }) {
   const [openMedium, setOpenMedium] = useState(null);
   const [openBranch, setOpenBranch] = useState(null);
 
@@ -365,6 +429,14 @@ function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onO
 
           <button onClick={() => { onOpenLoginHistory(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
             📅 Login History
+          </button>
+
+          <button onClick={() => { onOpenRefer(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
+            🎁 Refer & Earn
+          </button>
+
+          <button onClick={() => { onOpenBuyCoins(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
+            🪙 Buy Coins
           </button>
 
           {Object.keys(catalog || {}).map((medium) => (
@@ -453,6 +525,7 @@ export default function NextGenNotes() {
   const [catalog, setCatalog] = useState(null); // { "Hindi Medium": {school:{}, entrance:{}}, "English Medium": {...} }
   const [profile, setProfile] = useState(null); // { id, coins, referred_by, current_streak, last_login_date, created_at }
   const [referOpen, setReferOpen] = useState(false);
+  const [buyCoinsOpen, setBuyCoinsOpen] = useState(false);
 
   // Daily bonus claim popup state
   const [dailyBonusOpen, setDailyBonusOpen] = useState(false);
@@ -535,7 +608,7 @@ export default function NextGenNotes() {
   async function handleRedeem(note) {
     if (!profile) return;
     if (profile.coins < COIN_COST) {
-      alert(`Aapke paas sirf ${profile.coins} coins hain. ${COIN_COST} coins chahiye. Refer karke ya roz login bonus claim karke coins kamayein!`);
+      alert(`Aapke paas sirf ${profile.coins} coins hain. ${COIN_COST} coins chahiye. Refer karke, roz login bonus claim karke, ya Buy Coins se coins kamayein!`);
       setReferOpen(true);
       return;
     }
@@ -601,6 +674,8 @@ export default function NextGenNotes() {
         isAdmin={isAdmin}
         onOpenAdmin={() => setView("admin")}
         onOpenLoginHistory={() => setView("login-history")}
+        onOpenRefer={() => setReferOpen(true)}
+        onOpenBuyCoins={() => setBuyCoinsOpen(true)}
         catalog={catalog}
       />
 
@@ -609,6 +684,12 @@ export default function NextGenNotes() {
         onClose={() => setReferOpen(false)}
         coins={profile?.coins ?? 0}
         refLink={`${window.location.origin}${window.location.pathname}?ref=${session.user.id}`}
+      />
+
+      <BuyCoinsModal
+        open={buyCoinsOpen}
+        onClose={() => setBuyCoinsOpen(false)}
+        userEmail={session.user.email}
       />
 
       <DailyBonusModal
