@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import { COLORS, FONTS, TUITION_NAME, ABOUT_WEBSITE, ABOUT_TUITION, ADMIN_EMAIL } from "./siteConfig";
 import AdminPanel from "./AdminPanel";
@@ -17,33 +17,55 @@ import AdminPanel from "./AdminPanel";
   Edited entirely from the Admin Panel -> Manage Menu tab.
   See catalog_migration_v2.sql for the one-time table setup.
 
+  PROFILE ONBOARDING
+  - "profiles" table also has full_name and username (unique, case-
+    insensitive). Right after the first successful register_profile()
+    call, if either is missing, an OnboardingModal blocks the app
+    (can't be dismissed) until the student sets both. Username is
+    normalized to lowercase [a-z0-9_]{3,20} and saved with a direct
+    supabase.from('profiles').update(...) call (RLS lets a user update
+    their own row); a duplicate username raises a Postgres unique
+    violation (code 23505) which is shown as a friendly error.
+
   COIN + REFERRAL + DAILY LOGIN STREAK + BUY COINS SYSTEM
   - "profiles" table: id (=auth user id), coins, referred_by,
-    last_login_date, current_streak, created_at.
+    last_login_date, current_streak, full_name, username, created_at.
   - Signing in calls register_profile(referrer_id) RPC once — creates the
     profile row, credits welcome bonus if referred, credits referrer.
   - If today's bonus hasn't been claimed yet (profile.last_login_date is
-    not today), a "Claim your daily bonus" popup opens automatically.
-    The student must tap "Claim" — only then does claim_daily_login_bonus()
-    RPC run: +1 coin for a normal day, or +9 coins on the 7th continuous
-    day (then the streak resets). Each claim is recorded in
-    "login_history".
+    not today), a "Claim your daily bonus" popup opens automatically
+    (after onboarding is complete). The student must tap "Claim" — only
+    then does claim_daily_login_bonus() RPC run: +1 coin for a normal
+    day, or +9 coins on the 7th continuous day (then the streak resets).
+    Each claim is recorded in "login_history".
   - Each note can optionally have a "full_pdf_link" (Google Drive link,
     separate from the free-preview file_url). If present, a "Open with
     coins" button shows; clicking spends COIN_COST coins via the
     redeem_note RPC and opens the link.
   - "🎁 Refer & Earn" and "🪙 Buy Coins" are both reachable directly from
-    the ☰ menu now (Refer was previously only reachable via the header
-    coin badge — that shortcut still works too).
+    the ☰ menu (Refer is also reachable via the header coin badge).
   - Buy Coins has no in-app payment gateway: it shows fixed coin
     packages, and tapping one opens WhatsApp (BUY_COINS_WHATSAPP_NUMBER)
     with a prefilled message — admin manually credits coins afterwards
     from Admin Panel -> Add Coins (by the student's email).
   - Login History page (from the ☰ menu) lists login_history rows for
     the signed-in user: date, which day of the streak, coins earned.
-  See the SQL setup (profiles/login_history tables + register_profile +
-  redeem_note + claim_daily_login_bonus + admin_add_coins functions) —
-  run once in the Supabase SQL editor.
+
+  MESSAGE ADMIN (DM)
+  - "messages" table: id, student_id, sender_role ('student'|'admin'),
+    content, created_at, read_by_admin, read_by_student.
+  - Student side (MessageAdminPage): reads own thread directly via RLS
+    (auth.uid() = student_id), sends via send_message_to_admin RPC,
+    marks read via mark_thread_read_student RPC, and subscribes to
+    Supabase Realtime for live incoming admin replies.
+  - "💬 Message Admin" menu item shows an unread-count badge (computed
+    on each app load / view change) and clears once the thread is
+    opened and marked read.
+  - Admin side lives in AdminPanel.jsx (Messages tab): admin_list_threads
+    / admin_get_thread / admin_send_message RPCs.
+  See the SQL setup (profiles columns + messages table + all RPC
+  functions + realtime publication) — run once in the Supabase SQL
+  editor.
 */
 
 const COIN_COST = 10; // coins required to unlock one note's full PDF
@@ -58,6 +80,8 @@ const COIN_PACKAGES = [
   { coins: 130, price: 100 },
   { coins: 300, price: 200 },
 ];
+
+const USERNAME_REGEX = /^[a-z0-9_]{3,20}$/;
 
 function todayStr() {
   // local YYYY-MM-DD, matches how login_history.login_date reads back
@@ -186,6 +210,72 @@ function PdfViewer({ note, profile, onRedeem }) {
         )}
       </RuledCard>
       <TornEdge />
+    </div>
+  );
+}
+
+/* Blocking popup right after first login: student must set a display
+   name + a unique username before using the rest of the site. */
+function OnboardingModal({ open, onSubmit, saving, error }) {
+  const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
+
+  if (!open) return null;
+
+  function handleUsernameChange(e) {
+    setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ""));
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    onSubmit(fullName.trim(), username.trim());
+  }
+
+  const usernameValid = USERNAME_REGEX.test(username);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ position: "absolute", inset: 0, background: "rgba(38,50,74,0.65)" }} />
+      <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "26px 22px", maxWidth: 380, width: "100%" }}>
+        <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 21, margin: "0 0 6px" }}>Apna profile set karein</h3>
+        <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
+          Bas ek baar — naam aur ek unique username daal dein, phir aage badhein.
+        </p>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: COLORS.inkSoft, marginBottom: 5 }}>Aapka naam</label>
+            <input
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="e.g. Rahul Kumar"
+              style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", fontSize: 14.5, borderRadius: 6, border: `1.5px solid ${COLORS.inkSoft}55`, fontFamily: "'Work Sans', sans-serif", background: COLORS.paperDark }}
+            />
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: COLORS.inkSoft, marginBottom: 5 }}>Username</label>
+            <div style={{ display: "flex", alignItems: "center", border: `1.5px solid ${COLORS.inkSoft}55`, borderRadius: 6, background: COLORS.paperDark, paddingLeft: 12 }}>
+              <span style={{ color: COLORS.inkSoft, fontSize: 14.5 }}>@</span>
+              <input
+                value={username}
+                onChange={handleUsernameChange}
+                placeholder="apna_username"
+                style={{ flex: 1, boxSizing: "border-box", padding: "10px 10px 10px 4px", fontSize: 14.5, border: "none", background: "transparent", fontFamily: "'Work Sans', sans-serif", outline: "none" }}
+              />
+            </div>
+          </div>
+          <p style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: 4, marginBottom: 16 }}>
+            Sirf chhote letters, number, aur underscore (_) — 3 se 20 characters.
+          </p>
+          {error && <p style={{ fontSize: 12.5, color: COLORS.stampRed, marginBottom: 12 }}>{error}</p>}
+          <button
+            type="submit"
+            disabled={saving || !fullName.trim() || !usernameValid}
+            style={{ width: "100%", background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "13px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive", opacity: saving || !fullName.trim() || !usernameValid ? 0.6 : 1 }}
+          >
+            {saving ? "Saving..." : "Continue"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
@@ -407,10 +497,134 @@ function LoginHistoryPage({ onBack, profile }) {
   );
 }
 
+/* Page: student <-> admin DM thread, with live updates */
+function MessageAdminPage({ onBack, session }) {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const bottomRef = useRef(null);
+
+  async function load() {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("student_id", session.user.id)
+      .order("created_at", { ascending: true });
+    if (!error && data) setMessages(data);
+    setLoading(false);
+    await supabase.rpc("mark_thread_read_student");
+  }
+
+  useEffect(() => {
+    load();
+    const channel = supabase
+      .channel("messages-student-" + session.user.id)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages", filter: `student_id=eq.${session.user.id}` },
+        (payload) => {
+          setMessages((prev) => (prev.some((m) => m.id === payload.new.id) ? prev : [...prev, payload.new]));
+          if (payload.new.sender_role === "admin") supabase.rpc("mark_thread_read_student");
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  async function handleSend(e) {
+    e.preventDefault();
+    const content = text.trim();
+    if (!content) return;
+    setSending(true);
+    const { data, error } = await supabase.rpc("send_message_to_admin", { p_content: content });
+    setSending(false);
+    if (error) {
+      alert("Message send nahi hua: " + error.message);
+      return;
+    }
+    setMessages((prev) => (prev.some((m) => m.id === data.id) ? prev : [...prev, data]));
+    setText("");
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink, display: "flex", flexDirection: "column" }}>
+      <style>{FONTS}</style>
+      <header style={{ background: COLORS.ink, color: COLORS.paper, padding: "18px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+        <span style={{ fontFamily: "'Kalam', cursive", fontWeight: 700, fontSize: 20, color: COLORS.gold }}>💬 Message Admin</span>
+        <button onClick={onBack} style={{ background: "transparent", border: `1.5px solid ${COLORS.paper}66`, color: COLORS.paper, borderRadius: 6, padding: "8px 14px", fontSize: 13, cursor: "pointer" }}>
+          ← Back to site
+        </button>
+      </header>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: "18px 16px", display: "flex", flexDirection: "column", gap: 10, maxWidth: 640, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+        {loading ? (
+          <p style={{ fontSize: 13, color: COLORS.inkSoft, textAlign: "center" }}>Loading...</p>
+        ) : messages.length === 0 ? (
+          <p style={{ fontSize: 13, color: COLORS.inkSoft, textAlign: "center", marginTop: 30 }}>
+            Abhi koi message nahi hai. Neeche se admin ko message bhejein — koi bhi sawal poochh sakte hain.
+          </p>
+        ) : (
+          messages.map((m) => {
+            const isStudent = m.sender_role === "student";
+            return (
+              <div key={m.id} style={{ display: "flex", justifyContent: isStudent ? "flex-end" : "flex-start" }}>
+                <div
+                  style={{
+                    maxWidth: "78%",
+                    background: isStudent ? COLORS.margin : COLORS.paper,
+                    color: isStudent ? COLORS.paper : COLORS.ink,
+                    border: isStudent ? "none" : `1px solid ${COLORS.paperDark}`,
+                    borderRadius: 12,
+                    borderBottomRightRadius: isStudent ? 3 : 12,
+                    borderBottomLeftRadius: isStudent ? 12 : 3,
+                    padding: "9px 13px",
+                    fontSize: 14,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {!isStudent && <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.margin, marginBottom: 2 }}>Admin</div>}
+                  {m.content}
+                  <div style={{ fontSize: 10, opacity: 0.65, marginTop: 4, textAlign: "right" }}>
+                    {new Date(m.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <form onSubmit={handleSend} style={{ flexShrink: 0, display: "flex", gap: 8, padding: "12px 16px", background: COLORS.ink, maxWidth: 640, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Apna message likhein..."
+          style={{ flex: 1, padding: "11px 14px", fontSize: 14, borderRadius: 20, border: "none", fontFamily: "'Work Sans', sans-serif" }}
+        />
+        <button
+          type="submit"
+          disabled={sending || !text.trim()}
+          style={{ background: COLORS.gold, color: COLORS.ink, border: "none", borderRadius: 20, padding: "0 20px", fontSize: 14, fontWeight: 700, cursor: "pointer" }}
+        >
+          Send
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /* Menu: Medium (Hindi/English) -> School/Entrance Exam -> Class or Exam.
    Built live from the "catalog" prop (fetched from Supabase's
    site_catalog table, id='catalog'). */
-function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, catalog }) {
+function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, onOpenMessages, unreadMessages, catalog }) {
   const [openMedium, setOpenMedium] = useState(null);
   const [openBranch, setOpenBranch] = useState(null);
 
@@ -428,6 +642,15 @@ function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onO
         <div style={{ padding: "10px 6px 30px" }}>
           <button onClick={() => { onHome(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
             🏠 Home
+          </button>
+
+          <button onClick={() => { onOpenMessages(); onClose(); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
+            <span>💬 Message Admin</span>
+            {unreadMessages > 0 && (
+              <span style={{ background: COLORS.stampRed, color: "#fff", borderRadius: 999, minWidth: 20, height: 20, fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
+                {unreadMessages}
+              </span>
+            )}
           </button>
 
           <button onClick={() => { onOpenLoginHistory(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
@@ -523,12 +746,18 @@ export default function NextGenNotes() {
   const [session, setSession] = useState(undefined);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [nav, setNav] = useState(null); // { medium, category, key, subject, chapter }
-  const [view, setView] = useState("store"); // "store" | "admin" | "login-history"
+  const [view, setView] = useState("store"); // "store" | "admin" | "login-history" | "messages"
   const [notes, setNotes] = useState([]);
   const [catalog, setCatalog] = useState(null); // { "Hindi Medium": {school:{}, entrance:{}}, "English Medium": {...} }
-  const [profile, setProfile] = useState(null); // { id, coins, referred_by, current_streak, last_login_date, created_at }
+  const [profile, setProfile] = useState(null); // { id, coins, referred_by, current_streak, last_login_date, full_name, username, created_at }
   const [referOpen, setReferOpen] = useState(false);
   const [buyCoinsOpen, setBuyCoinsOpen] = useState(false);
+  const [unreadMessages, setUnreadMessages] = useState(0);
+
+  // Onboarding (name + username) popup state
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingSaving, setOnboardingSaving] = useState(false);
+  const [onboardingError, setOnboardingError] = useState("");
 
   // Daily bonus claim popup state
   const [dailyBonusOpen, setDailyBonusOpen] = useState(false);
@@ -559,6 +788,24 @@ export default function NextGenNotes() {
     setCatalog(!error && data ? data.data || {} : {});
   }
 
+  function checkAndOpenDailyBonus(data) {
+    if (!data.last_login_date || data.last_login_date !== todayStr()) {
+      setDailyBonusClaimed(false);
+      setDailyBonusEarned(0);
+      setDailyBonusOpen(true);
+    }
+  }
+
+  async function loadUnreadMessages(userId) {
+    const { count } = await supabase
+      .from("messages")
+      .select("id", { count: "exact", head: true })
+      .eq("student_id", userId)
+      .eq("sender_role", "admin")
+      .eq("read_by_student", false);
+    setUnreadMessages(count || 0);
+  }
+
   async function loadProfile() {
     const refCode = localStorage.getItem("ngn_ref");
     const { data, error } = await supabase.rpc("register_profile", { referrer_id: refCode || null });
@@ -566,12 +813,42 @@ export default function NextGenNotes() {
     localStorage.removeItem("ngn_ref");
     setProfile(data);
 
-    // Today's bonus not claimed yet -> open the claim popup (student taps to claim)
-    if (!data.last_login_date || data.last_login_date !== todayStr()) {
-      setDailyBonusClaimed(false);
-      setDailyBonusEarned(0);
-      setDailyBonusOpen(true);
+    if (!data.full_name || !data.username) {
+      setOnboardingOpen(true);
+      return; // wait for onboarding before showing the daily bonus popup
     }
+    checkAndOpenDailyBonus(data);
+  }
+
+  async function handleOnboardingSubmit(fullName, username) {
+    setOnboardingError("");
+    if (!fullName) {
+      setOnboardingError("Naam daalna zaroori hai.");
+      return;
+    }
+    if (!USERNAME_REGEX.test(username)) {
+      setOnboardingError("Username sirf chhote letters, number, underscore — 3-20 characters ka ho sakta hai.");
+      return;
+    }
+    setOnboardingSaving(true);
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ full_name: fullName, username })
+      .eq("id", session.user.id)
+      .select()
+      .single();
+    setOnboardingSaving(false);
+    if (error) {
+      if (error.code === "23505") {
+        setOnboardingError("Ye username already liya gaya hai — dusra try karein.");
+      } else {
+        setOnboardingError(error.message);
+      }
+      return;
+    }
+    setProfile(data);
+    setOnboardingOpen(false);
+    checkAndOpenDailyBonus(data);
   }
 
   async function handleClaimDailyBonus() {
@@ -605,6 +882,7 @@ export default function NextGenNotes() {
       loadNotes();
       loadCatalog();
       loadProfile();
+      loadUnreadMessages(session.user.id);
     }
   }, [session, view]);
 
@@ -643,6 +921,10 @@ export default function NextGenNotes() {
     return <LoginHistoryPage onBack={() => setView("store")} profile={profile} />;
   }
 
+  if (view === "messages") {
+    return <MessageAdminPage onBack={() => setView("store")} session={session} />;
+  }
+
   const subjectsObj = nav?.key ? catalog?.[nav.medium]?.[nav.category]?.[nav.key] : null;
   const branchLabel = (b) => (b === "school" ? "School" : "Entrance Exam");
 
@@ -665,7 +947,14 @@ export default function NextGenNotes() {
             🪙 {profile?.coins ?? 0}
           </button>
           <button onClick={() => supabase.auth.signOut()} style={{ background: "none", border: "none", color: `${COLORS.paper}99`, fontSize: 13, cursor: "pointer" }}>Sign out</button>
-          <button onClick={() => setDrawerOpen(true)} aria-label="Open menu" style={{ background: "transparent", border: `1.5px solid ${COLORS.paper}66`, color: COLORS.paper, borderRadius: 6, padding: "8px 12px", fontSize: 18, cursor: "pointer", lineHeight: 1 }}>☰</button>
+          <button onClick={() => setDrawerOpen(true)} aria-label="Open menu" style={{ background: "transparent", border: `1.5px solid ${COLORS.paper}66`, color: COLORS.paper, borderRadius: 6, padding: "8px 12px", fontSize: 18, cursor: "pointer", lineHeight: 1, position: "relative" }}>
+            ☰
+            {unreadMessages > 0 && (
+              <span style={{ position: "absolute", top: -4, right: -4, background: COLORS.stampRed, color: "#fff", borderRadius: 999, width: 16, height: 16, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {unreadMessages}
+              </span>
+            )}
+          </button>
         </div>
       </header>
 
@@ -679,6 +968,8 @@ export default function NextGenNotes() {
         onOpenLoginHistory={() => setView("login-history")}
         onOpenRefer={() => setReferOpen(true)}
         onOpenBuyCoins={() => setBuyCoinsOpen(true)}
+        onOpenMessages={() => setView("messages")}
+        unreadMessages={unreadMessages}
         catalog={catalog}
       />
 
@@ -693,6 +984,13 @@ export default function NextGenNotes() {
         open={buyCoinsOpen}
         onClose={() => setBuyCoinsOpen(false)}
         userEmail={session.user.email}
+      />
+
+      <OnboardingModal
+        open={onboardingOpen}
+        onSubmit={handleOnboardingSubmit}
+        saving={onboardingSaving}
+        error={onboardingError}
       />
 
       <DailyBonusModal

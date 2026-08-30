@@ -1,14 +1,17 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import { COLORS, FONTS } from "./siteConfig";
 
 /*
-  Admin Panel — three tabs:
+  Admin Panel — four tabs:
     1. Notes      — add/edit/delete notes
     2. Menu       — add/rename/delete School/Entrance -> Class/Exam ->
                     Subject -> Chapter, under each Medium.
     3. Add Coins  — credit coins to any student by their Google account
                     email (used for manual WhatsApp "Buy Coins" payments).
+    4. Messages   — Instagram-style DM inbox: every student who has
+                    messaged shows up with their username, tap opens the
+                    full chat, reply box sends a message back.
 
   Menu data lives in Supabase table "site_catalog", single row with
   id='catalog', shape:
@@ -32,6 +35,10 @@ import { COLORS, FONTS } from "./siteConfig";
   Add Coins tab calls the admin_add_coins(target_email, amount) Postgres
   function (security definer, checks the caller is ADMIN_EMAIL) — the
   student must have signed in at least once with that email already.
+
+  Messages tab calls admin_list_threads() / admin_get_thread(student_id)
+  / admin_send_message(student_id, content) — all security definer,
+  all check the caller is ADMIN_EMAIL.
 */
 
 function field(label, children) {
@@ -578,10 +585,182 @@ function AddCoinsTab() {
   );
 }
 
+/* ---------- Tab 4: Messages (Instagram-style inbox) ---------- */
+
+function MessagesTab() {
+  const [threads, setThreads] = useState([]);
+  const [loadingThreads, setLoadingThreads] = useState(true);
+  const [selected, setSelected] = useState(null); // { student_id, username, full_name }
+  const [messages, setMessages] = useState([]);
+  const [loadingThread, setLoadingThread] = useState(false);
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+  const bottomRef = useRef(null);
+
+  async function loadThreads() {
+    setLoadingThreads(true);
+    const { data, error } = await supabase.rpc("admin_list_threads");
+    if (!error && data) setThreads(data);
+    setLoadingThreads(false);
+  }
+  useEffect(() => { loadThreads(); }, []);
+
+  async function openThread(t) {
+    setSelected(t);
+    setLoadingThread(true);
+    const { data, error } = await supabase.rpc("admin_get_thread", { p_student_id: t.student_id });
+    if (!error && data) setMessages(data);
+    setLoadingThread(false);
+    loadThreads();
+  }
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  async function handleReply(e) {
+    e.preventDefault();
+    const content = reply.trim();
+    if (!content || !selected) return;
+    setSending(true);
+    const { data, error } = await supabase.rpc("admin_send_message", { p_student_id: selected.student_id, p_content: content });
+    setSending(false);
+    if (error) {
+      alert("Error: " + error.message);
+      return;
+    }
+    setMessages((prev) => [...prev, data]);
+    setReply("");
+    loadThreads();
+  }
+
+  function displayName(t) {
+    return t.username ? `@${t.username}` : (t.full_name || "Unknown student");
+  }
+
+  if (selected) {
+    return (
+      <section style={{ maxWidth: 640, margin: "0 auto", padding: "24px 20px 40px", display: "flex", flexDirection: "column", height: "calc(100vh - 160px)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <button onClick={() => setSelected(null)} style={{ background: "none", border: `1.5px solid ${COLORS.inkSoft}55`, borderRadius: 6, padding: "7px 12px", fontSize: 13, cursor: "pointer", color: COLORS.ink }}>
+            ← Inbox
+          </button>
+          <div>
+            <p style={{ margin: 0, fontFamily: "'Kalam', cursive", fontSize: 17, fontWeight: 700 }}>{displayName(selected)}</p>
+            {selected.username && selected.full_name && (
+              <p style={{ margin: 0, fontSize: 11.5, color: COLORS.inkSoft }}>{selected.full_name}</p>
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10, padding: "4px 2px", background: COLORS.paperDark, borderRadius: 8, border: `1px solid ${COLORS.paperDark}` }}>
+          {loadingThread ? (
+            <p style={{ fontSize: 13, color: COLORS.inkSoft, textAlign: "center", marginTop: 20 }}>Loading...</p>
+          ) : (
+            <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              {messages.map((m) => {
+                const isAdmin = m.sender_role === "admin";
+                return (
+                  <div key={m.id} style={{ display: "flex", justifyContent: isAdmin ? "flex-end" : "flex-start" }}>
+                    <div
+                      style={{
+                        maxWidth: "75%",
+                        background: isAdmin ? COLORS.margin : COLORS.paper,
+                        color: isAdmin ? COLORS.paper : COLORS.ink,
+                        border: isAdmin ? "none" : `1px solid ${COLORS.paperDark}`,
+                        borderRadius: 12,
+                        borderBottomRightRadius: isAdmin ? 3 : 12,
+                        borderBottomLeftRadius: isAdmin ? 12 : 3,
+                        padding: "9px 13px",
+                        fontSize: 14,
+                      }}
+                    >
+                      {m.content}
+                      <div style={{ fontSize: 10, opacity: 0.65, marginTop: 4, textAlign: "right" }}>
+                        {new Date(m.created_at).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={bottomRef} />
+            </div>
+          )}
+        </div>
+
+        <form onSubmit={handleReply} style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <input
+            value={reply}
+            onChange={(e) => setReply(e.target.value)}
+            placeholder="Reply likhein..."
+            style={{ ...inputStyle, flex: 1 }}
+          />
+          <button
+            type="submit"
+            disabled={sending || !reply.trim()}
+            style={{ background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "0 18px", fontSize: 14, fontWeight: 700, cursor: "pointer" }}
+          >
+            Send
+          </button>
+        </form>
+      </section>
+    );
+  }
+
+  return (
+    <section style={{ maxWidth: 640, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Messages</h2>
+      <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
+        Students ke messages yahan aate hain. Kisi bhi thread par tap karke poori chat dekhein aur reply karein.
+      </p>
+
+      {loadingThreads ? (
+        <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
+      ) : threads.length === 0 ? (
+        <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Abhi tak kisi ne message nahi kiya.</p>
+      ) : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {threads.map((t) => (
+            <button
+              key={t.student_id}
+              onClick={() => openThread(t)}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 10,
+                background: COLORS.paper,
+                border: `1px solid ${COLORS.paperDark}`,
+                borderRadius: 8,
+                padding: "12px 14px",
+                cursor: "pointer",
+                textAlign: "left",
+                fontFamily: "'Work Sans', sans-serif",
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: COLORS.ink }}>{displayName(t)}</p>
+                <p style={{ margin: "2px 0 0", fontSize: 12.5, color: COLORS.inkSoft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {t.last_message}
+                </p>
+              </div>
+              {t.unread_count > 0 && (
+                <span style={{ background: COLORS.stampRed, color: "#fff", borderRadius: 999, minWidth: 20, height: 20, fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px", flexShrink: 0 }}>
+                  {t.unread_count}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ---------- Shell with tab switcher ---------- */
 
 export default function AdminPanel({ onBack }) {
-  const [tab, setTab] = useState("notes"); // "notes" | "menu" | "coins"
+  const [tab, setTab] = useState("notes"); // "notes" | "menu" | "coins" | "messages"
 
   return (
     <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink }}>
@@ -597,11 +776,13 @@ export default function AdminPanel({ onBack }) {
         <button onClick={() => setTab("notes")} style={tab === "notes" ? btnActiveStyle : btnStyle}>📝 Notes</button>
         <button onClick={() => setTab("menu")} style={tab === "menu" ? btnActiveStyle : btnStyle}>📂 Manage Menu</button>
         <button onClick={() => setTab("coins")} style={tab === "coins" ? btnActiveStyle : btnStyle}>🪙 Add Coins</button>
+        <button onClick={() => setTab("messages")} style={tab === "messages" ? btnActiveStyle : btnStyle}>📩 Messages</button>
       </div>
 
       {tab === "notes" && <NotesTab />}
       {tab === "menu" && <ManageMenuTab />}
       {tab === "coins" && <AddCoinsTab />}
+      {tab === "messages" && <MessagesTab />}
     </div>
   );
 }
