@@ -14,9 +14,11 @@ import AdminPanel from "./AdminPanel";
       "Hindi Medium":   { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} },
       "English Medium": { "school": {...}, "entrance": {...} }
     }
-  Edited entirely from the Admin Panel -> Manage Menu tab. In the ☰ menu
-  this now sits inside a collapsible "📚 Notes" folder rather than being
-  top-level items.
+  Edited entirely from the Admin Panel -> Manage Menu tab, which now also
+  lets admin reorder Mediums, Classes/Exams, and Subjects (not just
+  Chapters) — reordering just rewrites the JSON object's key order, which
+  Object.keys() here picks up automatically. In the ☰ menu this sits
+  inside a collapsible "📚 Notes" folder.
   See catalog_migration_v2.sql for the one-time table setup.
 
   MENU ORDER
@@ -28,56 +30,49 @@ import AdminPanel from "./AdminPanel";
     time via normalizeMenuOrder() so old saved orders don't break when
     new menu items are added later.
 
+  SETTINGS (payment + contact info)
+  - Another row in site_catalog, id='settings', data = { upi_id,
+    qr_image_url, contact_email, contact_whatsapp, contact_instagram }.
+    Edited from Admin Panel -> Settings. qr_image_url and any DM
+    screenshots are uploaded to the public "app-uploads" Storage bucket.
+
   PROFILE ONBOARDING
   - "profiles" table also has full_name and username (unique, case-
     insensitive). Right after the first successful register_profile()
     call, if either is missing, an OnboardingModal blocks the app
-    (can't be dismissed) until the student sets both. Username is
-    normalized to lowercase [a-z0-9_]{3,20} and saved with a direct
-    supabase.from('profiles').update(...) call (RLS lets a user update
-    their own row); a duplicate username raises a Postgres unique
-    violation (code 23505) which is shown as a friendly error.
+    (can't be dismissed) until the student sets both.
 
   COIN + REFERRAL + DAILY LOGIN STREAK + BUY COINS SYSTEM
   - "profiles" table: id (=auth user id), coins, referred_by,
     last_login_date, current_streak, full_name, username, created_at.
-  - Signing in calls register_profile(referrer_id) RPC once — creates the
-    profile row, credits welcome bonus if referred, credits referrer.
-  - If today's bonus hasn't been claimed yet (profile.last_login_date is
-    not today), a "Claim your daily bonus" popup opens automatically
-    (after onboarding is complete). The student must tap "Claim" — only
-    then does claim_daily_login_bonus() RPC run: +1 coin for a normal
-    day, or +9 coins on the 7th continuous day (then the streak resets).
-    Each claim is recorded in "login_history".
-  - Each note can optionally have a "full_pdf_link" (Google Drive link,
-    separate from the free-preview file_url). If present, a "Open with
-    coins" button shows; clicking spends COIN_COST coins via the
-    redeem_note RPC and opens the link.
-  - Buy Coins has NO WhatsApp and no in-app payment gateway anymore:
-    tapping a package sends a DM to the admin (via send_message_to_admin)
-    describing the package, then takes the student straight to
-    Message Admin so they can sort out payment in chat — admin manually
-    credits coins afterwards from Admin Panel -> Add Coins.
-  - Login History page (from the ☰ menu) lists login_history rows for
-    the signed-in user: date, which day of the streak, coins earned.
+  - Signing in calls register_profile(referrer_id) RPC once, then (once
+    onboarding is done) a daily login bonus popup: +1 coin normally, +9
+    on the 7th continuous day (claim_daily_login_bonus RPC), recorded in
+    "login_history".
+  - Each note can optionally have a "full_pdf_link" unlocked for
+    COIN_COST coins via the redeem_note RPC.
+  - Buy Coins has NO WhatsApp and no automatic payment gateway: tapping
+    a package shows the admin's QR code + UPI ID for that amount, then
+    the student is taken to Message Admin to send a payment screenshot
+    (DM now supports images). Admin manually verifies and credits coins
+    via Admin Panel -> Add Coins, typically within 24 hours.
+  - Login History page (from the ☰ menu) lists login_history rows.
 
-  MESSAGE ADMIN (DM)
+  MESSAGE ADMIN (DM) + CONTACT
   - "messages" table: id, student_id, sender_role ('student'|'admin'),
-    content, created_at, read_by_admin, read_by_student.
-  - Student side (MessageAdminPage): reads own thread directly via RLS
-    (auth.uid() = student_id), sends via send_message_to_admin RPC,
-    marks read via mark_thread_read_student RPC, and subscribes to
-    Supabase Realtime for live incoming admin replies.
-  - "💬 Message Admin" menu item shows an unread-count badge (computed
-    on each app load / view change) and clears once the thread is
-    opened and marked read.
-  - Admin side lives in AdminPanel.jsx (Messages tab): admin_list_threads
-    / admin_get_thread / admin_send_message RPCs. Admin Panel also has
-    a Students tab (admin_list_students RPC) listing everyone who has
-    ever signed in, with name, username, and a running serial number.
-  See the SQL setup (profiles/messages/site_catalog rows + all RPC
-  functions + realtime publication) — run once in the Supabase SQL
-  editor.
+    content, image_url, created_at, read_by_admin, read_by_student.
+  - Student side (MessageAdminPage): reads own thread via RLS, sends
+    text and/or images via send_message_to_admin RPC (images uploaded
+    to the "app-uploads" Storage bucket first, public URL passed as
+    p_image_url), marks read via mark_thread_read_student RPC, and
+    subscribes to Realtime for live incoming admin replies.
+  - "📞 Contact" menu item shows a modal with the admin's email,
+    WhatsApp, and Instagram (from the settings row) as tappable links.
+  - Admin side lives in AdminPanel.jsx (Messages / Students / Settings
+    tabs).
+  See the SQL setup (profiles/messages/site_catalog rows + Storage
+  bucket + all RPC functions + realtime publication) — run once in the
+  Supabase SQL editor.
 */
 
 const COIN_COST = 10; // coins required to unlock one note's full PDF
@@ -94,7 +89,7 @@ const COIN_PACKAGES = [
 const USERNAME_REGEX = /^[a-z0-9_]{3,20}$/;
 
 // Reorderable ☰ menu items (Home is always first, Admin Panel always last/admin-only)
-const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes"];
+const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes", "contact"];
 const DEFAULT_MENU_ORDER = [...MENU_ITEM_KEYS];
 
 function normalizeMenuOrder(order) {
@@ -334,63 +329,151 @@ function ReferModal({ open, onClose, coins, refLink }) {
   );
 }
 
-/* Modal: fixed coin packages -> sends a DM to admin (no WhatsApp, no
-   in-app payment). Student then continues the conversation on the
-   Message Admin page to sort out payment; admin credits coins manually
-   afterwards via Admin Panel -> Add Coins. */
-function BuyCoinsModal({ open, onClose, onRequestSent }) {
-  const [sendingPkg, setSendingPkg] = useState(null);
+/* Modal: pick a coin package -> shows admin's QR + UPI ID for that
+   amount -> student pays manually and is handed off to Message Admin
+   to send a screenshot. No WhatsApp, no automatic gateway. */
+function BuyCoinsModal({ open, onClose, onGoToChat, settings }) {
+  const [selectedPkg, setSelectedPkg] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [notifying, setNotifying] = useState(false);
 
   if (!open) return null;
 
-  async function handleRequest(pkg) {
-    setSendingPkg(pkg.coins);
-    const content = `Main ${pkg.coins} coins kharidna chahta/chahti hoon (₹${pkg.price}). Payment kaise karu?`;
-    const { error } = await supabase.rpc("send_message_to_admin", { p_content: content });
-    setSendingPkg(null);
-    if (error) {
-      alert("Request bhejne me error hua: " + error.message);
-      return;
-    }
-    onRequestSent();
+  function handleClose() {
+    setSelectedPkg(null);
+    onClose();
+  }
+
+  async function handleProceedToChat() {
+    setNotifying(true);
+    const content = `Maine ${selectedPkg.coins} coins ke liye ₹${selectedPkg.price} ka payment kiya hai. Screenshot neeche bhej raha/rahi hoon.`;
+    await supabase.rpc("send_message_to_admin", { p_content: content });
+    setNotifying(false);
+    setSelectedPkg(null);
+    onGoToChat();
   }
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 70, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(38,50,74,0.55)" }} />
-      <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "24px 20px", maxWidth: 380, width: "100%" }}>
-        <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, margin: "0 0 8px" }}>Buy Coins 🪙</h3>
-        <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 16 }}>
-          Package choose karein — admin ko seedha message chala jayega, phir "Message Admin" chat mein payment details baat karein.
-        </p>
-        <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
-          {COIN_PACKAGES.map((pkg) => (
-            <button
-              key={pkg.coins}
-              onClick={() => handleRequest(pkg)}
-              disabled={sendingPkg !== null}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                background: COLORS.paperDark,
-                border: `1.5px solid ${COLORS.gold}88`,
-                borderRadius: 8,
-                padding: "13px 16px",
-                color: COLORS.ink,
-                cursor: sendingPkg !== null ? "default" : "pointer",
-                width: "100%",
-                textAlign: "left",
-                opacity: sendingPkg !== null && sendingPkg !== pkg.coins ? 0.5 : 1,
-              }}
-            >
-              <span style={{ fontFamily: "'Kalam', cursive", fontWeight: 700, fontSize: 16 }}>🪙 {pkg.coins} coins</span>
-              <span style={{ background: COLORS.margin, color: "#fff", borderRadius: 6, padding: "7px 12px", fontSize: 13, fontWeight: 700 }}>
-                {sendingPkg === pkg.coins ? "Bhej rahe hain..." : `₹${pkg.price} · Request bhejein`}
-              </span>
+      <div onClick={handleClose} style={{ position: "absolute", inset: 0, background: "rgba(38,50,74,0.55)" }} />
+      <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "24px 20px", maxWidth: 380, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+        {!selectedPkg ? (
+          <>
+            <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, margin: "0 0 8px" }}>Buy Coins 🪙</h3>
+            <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 16 }}>
+              Package choose karein — QR/UPI se payment karke screenshot admin ko bhejein, 24 ghante mein coins add ho jayenge.
+            </p>
+            <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
+              {COIN_PACKAGES.map((pkg) => (
+                <button
+                  key={pkg.coins}
+                  onClick={() => setSelectedPkg(pkg)}
+                  style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    background: COLORS.paperDark, border: `1.5px solid ${COLORS.gold}88`, borderRadius: 8,
+                    padding: "13px 16px", color: COLORS.ink, cursor: "pointer", width: "100%", textAlign: "left",
+                  }}
+                >
+                  <span style={{ fontFamily: "'Kalam', cursive", fontWeight: 700, fontSize: 16 }}>🪙 {pkg.coins} coins</span>
+                  <span style={{ background: COLORS.margin, color: "#fff", borderRadius: 6, padding: "7px 12px", fontSize: 13, fontWeight: 700 }}>₹{pkg.price}</span>
+                </button>
+              ))}
+            </div>
+            <button onClick={handleClose} style={{ width: "100%", background: "none", border: `1.5px solid ${COLORS.inkSoft}55`, borderRadius: 6, padding: "10px", fontSize: 13.5, cursor: "pointer", color: COLORS.ink }}>
+              Close
             </button>
-          ))}
-        </div>
+          </>
+        ) : (
+          <>
+            <button onClick={() => setSelectedPkg(null)} style={{ background: "none", border: "none", color: COLORS.margin, fontSize: 13, cursor: "pointer", padding: 0, marginBottom: 10 }}>
+              ← Packages
+            </button>
+            <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 19, margin: "0 0 4px" }}>
+              🪙 {selectedPkg.coins} coins — ₹{selectedPkg.price}
+            </h3>
+            <p style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 14 }}>
+              Neeche diye QR ya UPI ID se exactly ₹{selectedPkg.price} pay karein.
+            </p>
+            {settings?.qr_image_url && (
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+                <img src={settings.qr_image_url} alt="Payment QR" style={{ width: 200, height: 200, objectFit: "contain", background: "#fff", borderRadius: 8, border: `1px solid ${COLORS.paperDark}` }} />
+              </div>
+            )}
+            {settings?.upi_id && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                <input readOnly value={settings.upi_id} style={{ flex: 1, padding: "9px 10px", fontSize: 13, borderRadius: 6, border: `1.5px solid ${COLORS.inkSoft}55`, background: COLORS.paperDark, color: COLORS.ink }} />
+                <button
+                  onClick={() => { navigator.clipboard.writeText(settings.upi_id); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+                  style={{ background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "9px 12px", fontSize: 13, cursor: "pointer", fontWeight: 700 }}
+                >
+                  {copied ? "Copied!" : "Copy UPI ID"}
+                </button>
+              </div>
+            )}
+            {!settings?.qr_image_url && !settings?.upi_id && (
+              <p style={{ fontSize: 13, color: COLORS.stampRed, marginBottom: 16 }}>
+                Abhi payment details set nahi hui hain — Admin Panel se QR/UPI add karein.
+              </p>
+            )}
+            <button
+              onClick={handleProceedToChat}
+              disabled={notifying}
+              style={{ width: "100%", background: COLORS.gold, color: COLORS.ink, border: "none", borderRadius: 6, padding: "13px 16px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive" }}
+            >
+              {notifying ? "Bhej rahe hain..." : "✅ Payment kar diya — Screenshot bhejne jayein"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* Modal: admin contact details (email / WhatsApp / Instagram) */
+function ContactModal({ open, onClose, settings }) {
+  if (!open) return null;
+
+  function whatsappHref(v) {
+    if (!v) return null;
+    return v.startsWith("http") ? v : `https://wa.me/${v.replace(/[^0-9]/g, "")}`;
+  }
+  function instagramHref(v) {
+    if (!v) return null;
+    return v.startsWith("http") ? v : `https://instagram.com/${v.replace("@", "")}`;
+  }
+
+  const rows = [
+    { label: "Email", value: settings?.contact_email, href: settings?.contact_email ? `mailto:${settings.contact_email}` : null, icon: "📧" },
+    { label: "WhatsApp", value: settings?.contact_whatsapp, href: whatsappHref(settings?.contact_whatsapp), icon: "💚" },
+    { label: "Instagram", value: settings?.contact_instagram, href: instagramHref(settings?.contact_instagram), icon: "📸" },
+  ].filter((r) => r.value);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(38,50,74,0.55)" }} />
+      <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "24px 20px", maxWidth: 360, width: "100%" }}>
+        <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, margin: "0 0 14px" }}>📞 Contact Us</h3>
+        {rows.length === 0 ? (
+          <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 16 }}>Contact details abhi set nahi hui hain.</p>
+        ) : (
+          <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+            {rows.map((r) => (
+              <a
+                key={r.label}
+                href={r.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ display: "flex", alignItems: "center", gap: 10, background: COLORS.paperDark, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "12px 14px", textDecoration: "none", color: COLORS.ink }}
+              >
+                <span style={{ fontSize: 20 }}>{r.icon}</span>
+                <div>
+                  <p style={{ margin: 0, fontSize: 11.5, color: COLORS.inkSoft }}>{r.label}</p>
+                  <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{r.value}</p>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
         <button onClick={onClose} style={{ width: "100%", background: "none", border: `1.5px solid ${COLORS.inkSoft}55`, borderRadius: 6, padding: "10px", fontSize: 13.5, cursor: "pointer", color: COLORS.ink }}>
           Close
         </button>
@@ -531,13 +614,15 @@ function LoginHistoryPage({ onBack, profile }) {
   );
 }
 
-/* Page: student <-> admin DM thread, with live updates */
+/* Page: student <-> admin DM thread, with live updates + image sending */
 function MessageAdminPage({ onBack, session }) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const bottomRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   async function load() {
     setLoading(true);
@@ -587,6 +672,28 @@ function MessageAdminPage({ onBack, session }) {
     setText("");
   }
 
+  async function handleImagePick(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingImage(true);
+    const path = `chat/${session.user.id}/${Date.now()}-${file.name}`;
+    const { error: upErr } = await supabase.storage.from("app-uploads").upload(path, file);
+    if (upErr) {
+      setUploadingImage(false);
+      alert("Image upload nahi hua: " + upErr.message);
+      return;
+    }
+    const { data: pub } = supabase.storage.from("app-uploads").getPublicUrl(path);
+    const { data, error } = await supabase.rpc("send_message_to_admin", { p_content: "", p_image_url: pub.publicUrl });
+    setUploadingImage(false);
+    if (error) {
+      alert("Send nahi hua: " + error.message);
+      return;
+    }
+    setMessages((prev) => (prev.some((m) => m.id === data.id) ? prev : [...prev, data]));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
   return (
     <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink, display: "flex", flexDirection: "column" }}>
       <style>{FONTS}</style>
@@ -602,7 +709,7 @@ function MessageAdminPage({ onBack, session }) {
           <p style={{ fontSize: 13, color: COLORS.inkSoft, textAlign: "center" }}>Loading...</p>
         ) : messages.length === 0 ? (
           <p style={{ fontSize: 13, color: COLORS.inkSoft, textAlign: "center", marginTop: 30 }}>
-            Abhi koi message nahi hai. Neeche se admin ko message bhejein — koi bhi sawal poochh sakte hain.
+            Abhi koi message nahi hai. Neeche se admin ko message ya payment screenshot bhejein.
           </p>
         ) : (
           messages.map((m) => {
@@ -624,6 +731,9 @@ function MessageAdminPage({ onBack, session }) {
                   }}
                 >
                   {!isStudent && <div style={{ fontSize: 11, fontWeight: 700, color: COLORS.margin, marginBottom: 2 }}>Admin</div>}
+                  {m.image_url && (
+                    <img src={m.image_url} alt="attachment" style={{ maxWidth: "100%", borderRadius: 8, display: "block", marginBottom: m.content ? 6 : 2 }} />
+                  )}
                   {m.content}
                   <div style={{ fontSize: 10, opacity: 0.65, marginTop: 4, textAlign: "right" }}>
                     {new Date(m.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
@@ -637,6 +747,16 @@ function MessageAdminPage({ onBack, session }) {
       </div>
 
       <form onSubmit={handleSend} style={{ flexShrink: 0, display: "flex", gap: 8, padding: "12px 16px", background: COLORS.ink, maxWidth: 640, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+        <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImagePick} style={{ display: "none" }} id="chat-image-input" />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploadingImage}
+          style={{ background: "transparent", border: `1.5px solid ${COLORS.paper}66`, color: COLORS.paper, borderRadius: 20, width: 40, height: 40, flexShrink: 0, fontSize: 16, cursor: "pointer" }}
+          title="Screenshot bhejein"
+        >
+          {uploadingImage ? "…" : "📎"}
+        </button>
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -656,10 +776,11 @@ function MessageAdminPage({ onBack, session }) {
 }
 
 /* Menu: Home -> reorderable items (Message Admin / Login History /
-   Refer & Earn / Buy Coins / Notes folder) -> Admin Panel (admin only,
-   always last). The Notes folder holds Medium -> School/Entrance ->
-   Class/Exam -> Subject -> Chapter, built live from the "catalog" prop. */
-function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, onOpenMessages, unreadMessages, catalog, menuOrder }) {
+   Refer & Earn / Buy Coins / Notes folder / Contact) -> Admin Panel
+   (admin only, always last). The Notes folder holds Medium -> School/
+   Entrance -> Class/Exam -> Subject -> Chapter, built live from the
+   "catalog" prop, in whatever key order the admin has set. */
+function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, onOpenMessages, onOpenContact, unreadMessages, catalog, menuOrder }) {
   const [openNotesFolder, setOpenNotesFolder] = useState(false);
   const [openMedium, setOpenMedium] = useState(null);
   const [openBranch, setOpenBranch] = useState(null);
@@ -699,6 +820,13 @@ function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onO
       return (
         <button key={key} onClick={() => { onOpenBuyCoins(); onClose(); }} style={topItemStyle}>
           🪙 Buy Coins
+        </button>
+      );
+    }
+    if (key === "contact") {
+      return (
+        <button key={key} onClick={() => { onOpenContact(); onClose(); }} style={topItemStyle}>
+          📞 Contact
         </button>
       );
     }
@@ -819,9 +947,11 @@ export default function NextGenNotes() {
   const [notes, setNotes] = useState([]);
   const [catalog, setCatalog] = useState(null); // { "Hindi Medium": {school:{}, entrance:{}}, "English Medium": {...} }
   const [menuOrder, setMenuOrder] = useState(DEFAULT_MENU_ORDER);
+  const [settings, setSettings] = useState(null); // { upi_id, qr_image_url, contact_email, contact_whatsapp, contact_instagram }
   const [profile, setProfile] = useState(null); // { id, coins, referred_by, current_streak, last_login_date, full_name, username, created_at }
   const [referOpen, setReferOpen] = useState(false);
   const [buyCoinsOpen, setBuyCoinsOpen] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
   const [unreadMessages, setUnreadMessages] = useState(0);
 
   // Onboarding (name + username) popup state
@@ -861,6 +991,11 @@ export default function NextGenNotes() {
   async function loadMenuOrder() {
     const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "menu_order").single();
     setMenuOrder(!error && data?.data?.order ? normalizeMenuOrder(data.data.order) : DEFAULT_MENU_ORDER);
+  }
+
+  async function loadSettings() {
+    const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "settings").single();
+    setSettings(!error && data?.data ? data.data : {});
   }
 
   function checkAndOpenDailyBonus(data) {
@@ -957,6 +1092,7 @@ export default function NextGenNotes() {
       loadNotes();
       loadCatalog();
       loadMenuOrder();
+      loadSettings();
       loadProfile();
       loadUnreadMessages(session.user.id);
     }
@@ -1045,6 +1181,7 @@ export default function NextGenNotes() {
         onOpenRefer={() => setReferOpen(true)}
         onOpenBuyCoins={() => setBuyCoinsOpen(true)}
         onOpenMessages={() => setView("messages")}
+        onOpenContact={() => setContactOpen(true)}
         unreadMessages={unreadMessages}
         catalog={catalog}
         menuOrder={menuOrder}
@@ -1060,7 +1197,14 @@ export default function NextGenNotes() {
       <BuyCoinsModal
         open={buyCoinsOpen}
         onClose={() => setBuyCoinsOpen(false)}
-        onRequestSent={() => { setBuyCoinsOpen(false); setView("messages"); }}
+        onGoToChat={() => { setBuyCoinsOpen(false); setView("messages"); }}
+        settings={settings}
+      />
+
+      <ContactModal
+        open={contactOpen}
+        onClose={() => setContactOpen(false)}
+        settings={settings}
       />
 
       <OnboardingModal

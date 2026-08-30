@@ -3,25 +3,35 @@ import { supabase } from "./supabaseClient";
 import { COLORS, FONTS } from "./siteConfig";
 
 /*
-  Admin Panel — five tabs:
+  Admin Panel — six tabs:
     1. Notes      — add/edit/delete notes
     2. Menu       — add/rename/delete School/Entrance -> Class/Exam ->
-                    Subject -> Chapter (under each Medium), PLUS a
-                    "Menu Order" section to reorder the ☰ menu items
-                    students see (Message Admin / Login History /
-                    Refer & Earn / Buy Coins / Notes folder).
+                    Subject -> Chapter (under each Medium), PLUS reorder
+                    arrows at every level (Medium, Class/Exam, Subject,
+                    Chapter) and a "Menu Order" section for the ☰ menu
+                    items themselves.
     3. Add Coins  — credit coins to any student by their Google account
-                    email (used after a student requests coins via DM).
+                    email (used after a student requests coins via DM
+                    or sends a payment screenshot).
     4. Messages   — Instagram-style DM inbox: every student who has
                     messaged shows up with their username, tap opens the
-                    full chat, reply box sends a message back.
+                    full chat (text + images), reply box sends back.
     5. Students   — every student who has ever signed in, with a serial
                     number, name, username, and a total count.
+    6. Settings   — payment QR code image + UPI ID (shown to students in
+                    Buy Coins) and contact Email/WhatsApp/Instagram
+                    (shown in the student-side Contact modal).
 
   Menu data lives in Supabase table "site_catalog":
     - id='catalog'    -> { "Hindi Medium": { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} }, "English Medium": {...} }
-    - id='menu_order' -> { "order": ["messages","login-history","refer","buy-coins","notes"] }
+    - id='menu_order' -> { "order": ["messages","login-history","refer","buy-coins","notes","contact"] }
+    - id='settings'   -> { upi_id, qr_image_url, contact_email, contact_whatsapp, contact_instagram }
   See catalog_migration_v2.sql for the one-time table setup.
+
+  Reordering Medium/Class-Exam/Subject just rewrites the JSON object's
+  key order (JS objects preserve insertion order for string keys, and so
+  does JSON), which the student site picks up automatically via
+  Object.keys() — no extra "order" field needed for those levels.
 
   Only reachable from App.jsx if the signed-in user's email matches
   ADMIN_EMAIL in siteConfig.js.
@@ -30,31 +40,31 @@ import { COLORS, FONTS } from "./siteConfig";
     id, category, key, medium, subject, chapter, title, description,
     pages, file_url, full_pdf_link, whatsapp_link, created_at
 
-  full_pdf_link = optional Google Drive link to the COMPLETE note,
-  unlocked for free on the site by spending coins (see App.jsx /
-  COIN_COST). Separate from file_url, which is the free preview link.
-
   Add Coins tab calls the admin_add_coins(target_email, amount) Postgres
-  function (security definer, checks the caller is ADMIN_EMAIL) — the
-  student must have signed in at least once with that email already.
+  function (security definer, checks the caller is ADMIN_EMAIL).
 
   Messages tab calls admin_list_threads() / admin_get_thread(student_id)
-  / admin_send_message(student_id, content) — all security definer,
-  all check the caller is ADMIN_EMAIL. Buy Coins requests from students
-  arrive here as regular messages.
+  / admin_send_message(student_id, content, image_url) — all security
+  definer, all check the caller is ADMIN_EMAIL. Images (from students or
+  admin) are uploaded to the public "app-uploads" Storage bucket.
 
   Students tab calls admin_list_students() — security definer, admin
   only, returns every profiles row ordered by signup time.
+
+  Settings tab uploads the QR image to "app-uploads" Storage and saves
+  the resulting public URL, plus the other fields, into the
+  site_catalog id='settings' row.
 */
 
 // Keep this in sync with MENU_ITEM_KEYS in App.jsx
-const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes"];
+const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes", "contact"];
 const MENU_ITEM_LABELS = {
   messages: "💬 Message Admin",
   "login-history": "📅 Login History",
   refer: "🎁 Refer & Earn",
   "buy-coins": "🪙 Buy Coins",
   notes: "📚 Notes (Hindi/English Medium)",
+  contact: "📞 Contact",
 };
 
 function field(label, children) {
@@ -92,6 +102,7 @@ const btnStyle = {
 };
 const btnActiveStyle = { ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin, fontWeight: 600 };
 const smallLink = { background: "none", border: "none", cursor: "pointer", fontSize: 12, padding: 0 };
+const arrowBtn = { ...smallLink, color: COLORS.ink, fontSize: 15, padding: "2px 4px" };
 
 /* ---------- Tab 1: Notes ---------- */
 
@@ -361,8 +372,8 @@ function MenuOrderEditor() {
           {order.map((key, idx) => (
             <div key={key} style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <span style={{ ...btnStyle, flex: 1, cursor: "default" }}>{MENU_ITEM_LABELS[key]}</span>
-              <button onClick={() => move(idx, -1)} disabled={idx === 0 || saving} style={{ ...smallLink, color: COLORS.ink, fontSize: 16 }}>↑</button>
-              <button onClick={() => move(idx, 1)} disabled={idx === order.length - 1 || saving} style={{ ...smallLink, color: COLORS.ink, fontSize: 16 }}>↓</button>
+              <button onClick={() => move(idx, -1)} disabled={idx === 0 || saving} style={arrowBtn}>↑</button>
+              <button onClick={() => move(idx, 1)} disabled={idx === order.length - 1 || saving} style={arrowBtn}>↓</button>
             </div>
           ))}
         </div>
@@ -399,6 +410,19 @@ function ManageMenuTab() {
 
   function clone() { return JSON.parse(JSON.stringify(data)); }
 
+  // Rebuild an object with its keys in a new order (used for reordering
+  // Mediums / Classes-Exams / Subjects, since Object.keys() order is
+  // what the student site renders in).
+  function reorderKeys(obj, idx, dir) {
+    const keys = Object.keys(obj);
+    const j = idx + dir;
+    if (j < 0 || j >= keys.length) return null;
+    [keys[idx], keys[j]] = [keys[j], keys[idx]];
+    const rebuilt = {};
+    keys.forEach((k) => { rebuilt[k] = obj[k]; });
+    return rebuilt;
+  }
+
   async function save(updated) {
     setSaving(true);
     setMsg("");
@@ -409,6 +433,11 @@ function ManageMenuTab() {
   }
 
   const branch = data?.[medium]?.[category] || {};
+
+  function moveMedium(idx, dir) {
+    const reordered = reorderKeys(data, idx, dir);
+    if (reordered) save(reordered);
+  }
 
   function addKey() {
     if (!newKey.trim()) return;
@@ -434,6 +463,13 @@ function ManageMenuTab() {
     save(d);
     if (selectedKey === oldK) setSelectedKey(nk.trim());
   }
+  function moveKey(idx, dir) {
+    const d = clone();
+    const reordered = reorderKeys(d[medium][category], idx, dir);
+    if (!reordered) return;
+    d[medium][category] = reordered;
+    save(d);
+  }
 
   function addSubject() {
     if (!newSubject.trim() || !selectedKey) return;
@@ -458,6 +494,13 @@ function ManageMenuTab() {
     delete d[medium][category][selectedKey][oldS];
     save(d);
     if (selectedSubject === oldS) setSelectedSubject(ns.trim());
+  }
+  function moveSubject(idx, dir) {
+    const d = clone();
+    const reordered = reorderKeys(d[medium][category][selectedKey], idx, dir);
+    if (!reordered) return;
+    d[medium][category][selectedKey] = reordered;
+    save(d);
   }
 
   function addChapter() {
@@ -488,13 +531,16 @@ function ManageMenuTab() {
     save(d);
   }
 
+  const mediumKeys = data ? Object.keys(data) : [];
+  const branchKeys = Object.keys(branch);
+  const subjectKeys = selectedKey ? Object.keys(branch[selectedKey] || {}) : [];
   const chapters = selectedKey && selectedSubject ? (branch[selectedKey]?.[selectedSubject] || []) : [];
 
   return (
     <section style={{ maxWidth: 700, margin: "0 auto", padding: "32px 20px 60px" }}>
       <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Manage Menu</h2>
       <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
-        Yahan se website ke ☰ menu mein Class/Exam, Subject aur Chapter add/rename/delete kar sakte ho — code chhoone ki zaroorat nahi.
+        Yahan se website ke ☰ menu mein Class/Exam, Subject aur Chapter add/rename/delete/reorder kar sakte ho — code chhoone ki zaroorat nahi.
       </p>
 
       <MenuOrderEditor />
@@ -503,9 +549,14 @@ function ManageMenuTab() {
         <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
       ) : (
         <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-            {Object.keys(data).map((m) => (
-              <button key={m} onClick={() => setMedium(m)} style={medium === m ? btnActiveStyle : btnStyle}>{m}</button>
+          <p style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.inkSoft, marginBottom: 6 }}>Medium (order + select)</p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+            {mediumKeys.map((m, idx) => (
+              <div key={m} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                <button onClick={() => setMedium(m)} style={medium === m ? btnActiveStyle : btnStyle}>{m}</button>
+                <button onClick={() => moveMedium(idx, -1)} disabled={idx === 0} style={arrowBtn}>↑</button>
+                <button onClick={() => moveMedium(idx, 1)} disabled={idx === mediumKeys.length - 1} style={arrowBtn}>↓</button>
+              </div>
             ))}
           </div>
           <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
@@ -524,7 +575,7 @@ function ManageMenuTab() {
                 {medium} · {category === "school" ? "School — Classes" : "Entrance Exams"}
               </h3>
               <div style={{ display: "grid", gap: 6 }}>
-                {Object.keys(branch).map((k) => (
+                {branchKeys.map((k, idx) => (
                   <div key={k} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <button
                       onClick={() => { setSelectedKey(k); setSelectedSubject(null); }}
@@ -532,11 +583,13 @@ function ManageMenuTab() {
                     >
                       {k}
                     </button>
+                    <button onClick={() => moveKey(idx, -1)} disabled={idx === 0} style={arrowBtn}>↑</button>
+                    <button onClick={() => moveKey(idx, 1)} disabled={idx === branchKeys.length - 1} style={arrowBtn}>↓</button>
                     <button onClick={() => renameKey(k)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
                     <button onClick={() => deleteKey(k)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
                   </div>
                 ))}
-                {Object.keys(branch).length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi {category === "school" ? "class" : "exam"} nahi hai.</p>}
+                {branchKeys.length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi {category === "school" ? "class" : "exam"} nahi hai.</p>}
               </div>
               <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
                 <input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder={category === "school" ? "e.g. Class 6" : "e.g. JEE"} style={{ ...inputStyle, flex: 1 }} />
@@ -549,14 +602,16 @@ function ManageMenuTab() {
               <div>
                 <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 16, margin: "0 0 8px" }}>Subjects — {selectedKey}</h3>
                 <div style={{ display: "grid", gap: 6 }}>
-                  {Object.keys(branch[selectedKey] || {}).map((s) => (
+                  {subjectKeys.map((s, idx) => (
                     <div key={s} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                       <button onClick={() => setSelectedSubject(s)} style={{ ...(selectedSubject === s ? btnActiveStyle : btnStyle), flex: 1 }}>{s}</button>
+                      <button onClick={() => moveSubject(idx, -1)} disabled={idx === 0} style={arrowBtn}>↑</button>
+                      <button onClick={() => moveSubject(idx, 1)} disabled={idx === subjectKeys.length - 1} style={arrowBtn}>↓</button>
                       <button onClick={() => renameSubject(s)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
                       <button onClick={() => deleteSubject(s)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
                     </div>
                   ))}
-                  {Object.keys(branch[selectedKey] || {}).length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi subject nahi hai.</p>}
+                  {subjectKeys.length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft }}>Abhi koi subject nahi hai.</p>}
                 </div>
                 <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
                   <input value={newSubject} onChange={(e) => setNewSubject(e.target.value)} placeholder="e.g. Maths" style={{ ...inputStyle, flex: 1 }} />
@@ -573,8 +628,8 @@ function ManageMenuTab() {
                   {chapters.map((c, idx) => (
                     <div key={idx} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                       <span style={{ ...btnStyle, flex: 1, cursor: "default" }}>{c}</span>
-                      <button onClick={() => moveChapter(idx, -1)} disabled={idx === 0} style={{ ...smallLink, color: COLORS.ink }}>↑</button>
-                      <button onClick={() => moveChapter(idx, 1)} disabled={idx === chapters.length - 1} style={{ ...smallLink, color: COLORS.ink }}>↓</button>
+                      <button onClick={() => moveChapter(idx, -1)} disabled={idx === 0} style={arrowBtn}>↑</button>
+                      <button onClick={() => moveChapter(idx, 1)} disabled={idx === chapters.length - 1} style={arrowBtn}>↓</button>
                       <button onClick={() => renameChapter(idx, c)} style={{ ...smallLink, color: COLORS.ink, textDecoration: "underline" }}>Rename</button>
                       <button onClick={() => deleteChapter(idx)} style={{ ...smallLink, color: COLORS.stampRed }}>Delete</button>
                     </div>
@@ -631,7 +686,7 @@ function AddCoinsTab() {
       <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Add Coins</h2>
       <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
         Student ke Google account email daalein aur kitne coins add karne hain — turant unke account mein credit ho jayenge.
-        Student ne pehle site pe kam se kam ek baar Google se sign-in kiya hua hona chahiye. Buy Coins requests "Messages" tab me DM ke through aati hain.
+        Student ne pehle site pe kam se kam ek baar Google se sign-in kiya hua hona chahiye. Payment screenshots "Messages" tab me aati hain.
       </p>
 
       <form onSubmit={handleSubmit} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "18px 16px" }}>
@@ -664,7 +719,7 @@ function AddCoinsTab() {
   );
 }
 
-/* ---------- Tab 4: Messages (Instagram-style inbox) ---------- */
+/* ---------- Tab 4: Messages (Instagram-style inbox, with images) ---------- */
 
 function MessagesTab() {
   const [threads, setThreads] = useState([]);
@@ -674,7 +729,9 @@ function MessagesTab() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const bottomRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   async function loadThreads() {
     setLoadingThreads(true);
@@ -711,6 +768,28 @@ function MessagesTab() {
     setMessages((prev) => [...prev, data]);
     setReply("");
     loadThreads();
+  }
+
+  async function handleImagePick(e) {
+    const file = e.target.files?.[0];
+    if (!file || !selected) return;
+    setUploadingImage(true);
+    const path = `chat/${selected.student_id}/admin-${Date.now()}-${file.name}`;
+    const { error: upErr } = await supabase.storage.from("app-uploads").upload(path, file);
+    if (upErr) {
+      setUploadingImage(false);
+      alert("Image upload nahi hua: " + upErr.message);
+      return;
+    }
+    const { data: pub } = supabase.storage.from("app-uploads").getPublicUrl(path);
+    const { data, error } = await supabase.rpc("admin_send_message", { p_student_id: selected.student_id, p_content: "", p_image_url: pub.publicUrl });
+    setUploadingImage(false);
+    if (error) {
+      alert("Send nahi hua: " + error.message);
+      return;
+    }
+    setMessages((prev) => [...prev, data]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function displayName(t) {
@@ -754,6 +833,11 @@ function MessagesTab() {
                         fontSize: 14,
                       }}
                     >
+                      {m.image_url && (
+                        <a href={m.image_url} target="_blank" rel="noopener noreferrer">
+                          <img src={m.image_url} alt="attachment" style={{ maxWidth: 220, borderRadius: 8, display: "block", marginBottom: m.content ? 6 : 2 }} />
+                        </a>
+                      )}
                       {m.content}
                       <div style={{ fontSize: 10, opacity: 0.65, marginTop: 4, textAlign: "right" }}>
                         {new Date(m.created_at).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
@@ -768,6 +852,16 @@ function MessagesTab() {
         </div>
 
         <form onSubmit={handleReply} style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImagePick} style={{ display: "none" }} />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadingImage}
+            style={{ ...btnStyle, flexShrink: 0, padding: "0 12px" }}
+            title="Image bhejein"
+          >
+            {uploadingImage ? "…" : "📎"}
+          </button>
           <input
             value={reply}
             onChange={(e) => setReply(e.target.value)}
@@ -790,7 +884,7 @@ function MessagesTab() {
     <section style={{ maxWidth: 640, margin: "0 auto", padding: "32px 20px 60px" }}>
       <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Messages</h2>
       <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
-        Students ke messages yahan aate hain (Buy Coins requests bhi). Kisi bhi thread par tap karke poori chat dekhein aur reply karein.
+        Students ke messages aur payment screenshots yahan aate hain. Kisi bhi thread par tap karke poori chat dekhein aur reply karein.
       </p>
 
       {loadingThreads ? (
@@ -820,7 +914,7 @@ function MessagesTab() {
               <div style={{ minWidth: 0 }}>
                 <p style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: COLORS.ink }}>{displayName(t)}</p>
                 <p style={{ margin: "2px 0 0", fontSize: 12.5, color: COLORS.inkSoft, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {t.last_message}
+                  {t.last_message || "📷 Image"}
                 </p>
               </div>
               {t.unread_count > 0 && (
@@ -896,10 +990,118 @@ function StudentsTab() {
   );
 }
 
+/* ---------- Tab 6: Settings (payment QR/UPI + contact info) ---------- */
+
+function SettingsTab() {
+  const [form, setForm] = useState({ upi_id: "", qr_image_url: "", contact_email: "", contact_whatsapp: "", contact_instagram: "" });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploadingQr, setUploadingQr] = useState(false);
+  const [msg, setMsg] = useState("");
+  const qrInputRef = useRef(null);
+
+  async function load() {
+    setLoading(true);
+    const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "settings").single();
+    if (!error && data?.data) setForm((f) => ({ ...f, ...data.data }));
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+
+  async function handleQrUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingQr(true);
+    const path = `settings/qr-${Date.now()}-${file.name}`;
+    const { error: upErr } = await supabase.storage.from("app-uploads").upload(path, file, { upsert: true });
+    if (upErr) {
+      setUploadingQr(false);
+      setMsg("Error: " + upErr.message);
+      return;
+    }
+    const { data: pub } = supabase.storage.from("app-uploads").getPublicUrl(path);
+    set("qr_image_url", pub.publicUrl);
+    setUploadingQr(false);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setMsg("");
+    const { error } = await supabase.from("site_catalog").update({ data: form }).eq("id", "settings");
+    setSaving(false);
+    if (error) setMsg("Error: " + error.message);
+    else setMsg("Settings save ho gayi ✓");
+  }
+
+  if (loading) {
+    return (
+      <section style={{ maxWidth: 480, margin: "0 auto", padding: "32px 20px 60px" }}>
+        <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
+      </section>
+    );
+  }
+
+  return (
+    <section style={{ maxWidth: 480, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Settings</h2>
+      <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
+        Payment QR/UPI (Buy Coins mein students ko dikhega) aur contact details (Contact modal mein students ko dikhenge).
+      </p>
+
+      <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 17, margin: "0 0 10px" }}>Payment</h3>
+      <div style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "16px", marginBottom: 24 }}>
+        {field("Payment QR code image", (
+          <div>
+            {form.qr_image_url && (
+              <img src={form.qr_image_url} alt="QR preview" style={{ width: 140, height: 140, objectFit: "contain", background: "#fff", borderRadius: 8, border: `1px solid ${COLORS.paperDark}`, marginBottom: 10, display: "block" }} />
+            )}
+            <input ref={qrInputRef} type="file" accept="image/*" onChange={handleQrUpload} style={{ display: "none" }} />
+            <button
+              type="button"
+              onClick={() => qrInputRef.current?.click()}
+              disabled={uploadingQr}
+              style={{ ...btnStyle, background: COLORS.margin, color: COLORS.paper, borderColor: COLORS.margin }}
+            >
+              {uploadingQr ? "Uploading..." : form.qr_image_url ? "QR badlein" : "QR upload karein"}
+            </button>
+          </div>
+        ))}
+        {field("UPI ID", (
+          <input value={form.upi_id} onChange={(e) => set("upi_id", e.target.value)} style={inputStyle} placeholder="yourname@upi" />
+        ))}
+      </div>
+
+      <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 17, margin: "0 0 10px" }}>Contact</h3>
+      <div style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "16px", marginBottom: 20 }}>
+        {field("Email", (
+          <input type="email" value={form.contact_email} onChange={(e) => set("contact_email", e.target.value)} style={inputStyle} placeholder="you@example.com" />
+        ))}
+        {field("WhatsApp (number ya link)", (
+          <input value={form.contact_whatsapp} onChange={(e) => set("contact_whatsapp", e.target.value)} style={inputStyle} placeholder="916206549468 ya https://wa.me/..." />
+        ))}
+        {field("Instagram (handle ya link)", (
+          <input value={form.contact_instagram} onChange={(e) => set("contact_instagram", e.target.value)} style={inputStyle} placeholder="@nextgennotes ya https://instagram.com/..." />
+        ))}
+      </div>
+
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        style={{ width: "100%", background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "12px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive" }}
+      >
+        {saving ? "Saving..." : "Save Settings"}
+      </button>
+      {msg && <p style={{ fontSize: 13, color: msg.startsWith("Error") ? COLORS.stampRed : COLORS.ink, marginTop: 10 }}>{msg}</p>}
+    </section>
+  );
+}
+
 /* ---------- Shell with tab switcher ---------- */
 
 export default function AdminPanel({ onBack }) {
-  const [tab, setTab] = useState("notes"); // "notes" | "menu" | "coins" | "messages" | "students"
+  const [tab, setTab] = useState("notes"); // "notes" | "menu" | "coins" | "messages" | "students" | "settings"
 
   return (
     <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink }}>
@@ -917,6 +1119,7 @@ export default function AdminPanel({ onBack }) {
         <button onClick={() => setTab("coins")} style={tab === "coins" ? btnActiveStyle : btnStyle}>🪙 Add Coins</button>
         <button onClick={() => setTab("messages")} style={tab === "messages" ? btnActiveStyle : btnStyle}>📩 Messages</button>
         <button onClick={() => setTab("students")} style={tab === "students" ? btnActiveStyle : btnStyle}>🎓 Students</button>
+        <button onClick={() => setTab("settings")} style={tab === "settings" ? btnActiveStyle : btnStyle}>⚙️ Settings</button>
       </div>
 
       {tab === "notes" && <NotesTab />}
@@ -924,6 +1127,7 @@ export default function AdminPanel({ onBack }) {
       {tab === "coins" && <AddCoinsTab />}
       {tab === "messages" && <MessagesTab />}
       {tab === "students" && <StudentsTab />}
+      {tab === "settings" && <SettingsTab />}
     </div>
   );
 }
