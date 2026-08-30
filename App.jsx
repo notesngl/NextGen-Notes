@@ -14,8 +14,19 @@ import AdminPanel from "./AdminPanel";
       "Hindi Medium":   { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} },
       "English Medium": { "school": {...}, "entrance": {...} }
     }
-  Edited entirely from the Admin Panel -> Manage Menu tab.
+  Edited entirely from the Admin Panel -> Manage Menu tab. In the ☰ menu
+  this now sits inside a collapsible "📚 Notes" folder rather than being
+  top-level items.
   See catalog_migration_v2.sql for the one-time table setup.
+
+  MENU ORDER
+  - Another row in site_catalog, id='menu_order', data = { order: [...] }
+    — an array of keys from MENU_ITEM_KEYS controlling the order the
+    non-fixed ☰ menu items appear in (Home is always first, Admin Panel
+    is always last and admin-only). Edited from Admin Panel -> Manage
+    Menu -> Menu Order. Unknown/missing keys are normalized at render
+    time via normalizeMenuOrder() so old saved orders don't break when
+    new menu items are added later.
 
   PROFILE ONBOARDING
   - "profiles" table also has full_name and username (unique, case-
@@ -42,12 +53,11 @@ import AdminPanel from "./AdminPanel";
     separate from the free-preview file_url). If present, a "Open with
     coins" button shows; clicking spends COIN_COST coins via the
     redeem_note RPC and opens the link.
-  - "🎁 Refer & Earn" and "🪙 Buy Coins" are both reachable directly from
-    the ☰ menu (Refer is also reachable via the header coin badge).
-  - Buy Coins has no in-app payment gateway: it shows fixed coin
-    packages, and tapping one opens WhatsApp (BUY_COINS_WHATSAPP_NUMBER)
-    with a prefilled message — admin manually credits coins afterwards
-    from Admin Panel -> Add Coins (by the student's email).
+  - Buy Coins has NO WhatsApp and no in-app payment gateway anymore:
+    tapping a package sends a DM to the admin (via send_message_to_admin)
+    describing the package, then takes the student straight to
+    Message Admin so they can sort out payment in chat — admin manually
+    credits coins afterwards from Admin Panel -> Add Coins.
   - Login History page (from the ☰ menu) lists login_history rows for
     the signed-in user: date, which day of the streak, coins earned.
 
@@ -62,16 +72,16 @@ import AdminPanel from "./AdminPanel";
     on each app load / view change) and clears once the thread is
     opened and marked read.
   - Admin side lives in AdminPanel.jsx (Messages tab): admin_list_threads
-    / admin_get_thread / admin_send_message RPCs.
-  See the SQL setup (profiles columns + messages table + all RPC
+    / admin_get_thread / admin_send_message RPCs. Admin Panel also has
+    a Students tab (admin_list_students RPC) listing everyone who has
+    ever signed in, with name, username, and a running serial number.
+  See the SQL setup (profiles/messages/site_catalog rows + all RPC
   functions + realtime publication) — run once in the Supabase SQL
   editor.
 */
 
 const COIN_COST = 10; // coins required to unlock one note's full PDF
 
-// Buy Coins config — edit these anytime
-const BUY_COINS_WHATSAPP_NUMBER = "916206549468"; // country code + number, no +/spaces
 const COIN_PACKAGES = [
   { coins: 5, price: 5 },
   { coins: 11, price: 10 },
@@ -82,6 +92,16 @@ const COIN_PACKAGES = [
 ];
 
 const USERNAME_REGEX = /^[a-z0-9_]{3,20}$/;
+
+// Reorderable ☰ menu items (Home is always first, Admin Panel always last/admin-only)
+const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes"];
+const DEFAULT_MENU_ORDER = [...MENU_ITEM_KEYS];
+
+function normalizeMenuOrder(order) {
+  const cleaned = (Array.isArray(order) ? order : []).filter((k) => MENU_ITEM_KEYS.includes(k));
+  const missing = MENU_ITEM_KEYS.filter((k) => !cleaned.includes(k));
+  return [...cleaned, ...missing];
+}
 
 function todayStr() {
   // local YYYY-MM-DD, matches how login_history.login_date reads back
@@ -314,15 +334,25 @@ function ReferModal({ open, onClose, coins, refLink }) {
   );
 }
 
-/* Modal: fixed coin packages -> WhatsApp with a prefilled message.
-   No in-app payment; admin manually credits coins after payment via
-   Admin Panel -> Add Coins. */
-function BuyCoinsModal({ open, onClose, userEmail }) {
+/* Modal: fixed coin packages -> sends a DM to admin (no WhatsApp, no
+   in-app payment). Student then continues the conversation on the
+   Message Admin page to sort out payment; admin credits coins manually
+   afterwards via Admin Panel -> Add Coins. */
+function BuyCoinsModal({ open, onClose, onRequestSent }) {
+  const [sendingPkg, setSendingPkg] = useState(null);
+
   if (!open) return null;
 
-  function buyLink(pkg) {
-    const msg = `Hi! Main ${pkg.coins} coins kharidna chahta/chahti hoon (₹${pkg.price}). Mera email: ${userEmail}`;
-    return `https://wa.me/${BUY_COINS_WHATSAPP_NUMBER}?text=${encodeURIComponent(msg)}`;
+  async function handleRequest(pkg) {
+    setSendingPkg(pkg.coins);
+    const content = `Main ${pkg.coins} coins kharidna chahta/chahti hoon (₹${pkg.price}). Payment kaise karu?`;
+    const { error } = await supabase.rpc("send_message_to_admin", { p_content: content });
+    setSendingPkg(null);
+    if (error) {
+      alert("Request bhejne me error hua: " + error.message);
+      return;
+    }
+    onRequestSent();
   }
 
   return (
@@ -331,15 +361,14 @@ function BuyCoinsModal({ open, onClose, userEmail }) {
       <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "24px 20px", maxWidth: 380, width: "100%" }}>
         <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, margin: "0 0 8px" }}>Buy Coins 🪙</h3>
         <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 16 }}>
-          Package choose karke WhatsApp par payment confirm karein — coins jaldi hi aapke account mein add ho jayenge.
+          Package choose karein — admin ko seedha message chala jayega, phir "Message Admin" chat mein payment details baat karein.
         </p>
         <div style={{ display: "grid", gap: 10, marginBottom: 14 }}>
           {COIN_PACKAGES.map((pkg) => (
-            <a
+            <button
               key={pkg.coins}
-              href={buyLink(pkg)}
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={() => handleRequest(pkg)}
+              disabled={sendingPkg !== null}
               style={{
                 display: "flex",
                 justifyContent: "space-between",
@@ -348,13 +377,18 @@ function BuyCoinsModal({ open, onClose, userEmail }) {
                 border: `1.5px solid ${COLORS.gold}88`,
                 borderRadius: 8,
                 padding: "13px 16px",
-                textDecoration: "none",
                 color: COLORS.ink,
+                cursor: sendingPkg !== null ? "default" : "pointer",
+                width: "100%",
+                textAlign: "left",
+                opacity: sendingPkg !== null && sendingPkg !== pkg.coins ? 0.5 : 1,
               }}
             >
               <span style={{ fontFamily: "'Kalam', cursive", fontWeight: 700, fontSize: 16 }}>🪙 {pkg.coins} coins</span>
-              <span style={{ background: "#25D366", color: "#fff", borderRadius: 6, padding: "7px 12px", fontSize: 13, fontWeight: 700 }}>₹{pkg.price} · WhatsApp</span>
-            </a>
+              <span style={{ background: COLORS.margin, color: "#fff", borderRadius: 6, padding: "7px 12px", fontSize: 13, fontWeight: 700 }}>
+                {sendingPkg === pkg.coins ? "Bhej rahe hain..." : `₹${pkg.price} · Request bhejein`}
+              </span>
+            </button>
           ))}
         </div>
         <button onClick={onClose} style={{ width: "100%", background: "none", border: `1.5px solid ${COLORS.inkSoft}55`, borderRadius: 6, padding: "10px", fontSize: 13.5, cursor: "pointer", color: COLORS.ink }}>
@@ -621,14 +655,101 @@ function MessageAdminPage({ onBack, session }) {
   );
 }
 
-/* Menu: Medium (Hindi/English) -> School/Entrance Exam -> Class or Exam.
-   Built live from the "catalog" prop (fetched from Supabase's
-   site_catalog table, id='catalog'). */
-function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, onOpenMessages, unreadMessages, catalog }) {
+/* Menu: Home -> reorderable items (Message Admin / Login History /
+   Refer & Earn / Buy Coins / Notes folder) -> Admin Panel (admin only,
+   always last). The Notes folder holds Medium -> School/Entrance ->
+   Class/Exam -> Subject -> Chapter, built live from the "catalog" prop. */
+function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, onOpenMessages, unreadMessages, catalog, menuOrder }) {
+  const [openNotesFolder, setOpenNotesFolder] = useState(false);
   const [openMedium, setOpenMedium] = useState(null);
   const [openBranch, setOpenBranch] = useState(null);
 
   if (!open) return null;
+
+  const topItemStyle = { display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" };
+
+  function renderItem(key) {
+    if (key === "messages") {
+      return (
+        <button key={key} onClick={() => { onOpenMessages(); onClose(); }} style={{ ...topItemStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>💬 Message Admin</span>
+          {unreadMessages > 0 && (
+            <span style={{ background: COLORS.stampRed, color: "#fff", borderRadius: 999, minWidth: 20, height: 20, fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
+              {unreadMessages}
+            </span>
+          )}
+        </button>
+      );
+    }
+    if (key === "login-history") {
+      return (
+        <button key={key} onClick={() => { onOpenLoginHistory(); onClose(); }} style={topItemStyle}>
+          📅 Login History
+        </button>
+      );
+    }
+    if (key === "refer") {
+      return (
+        <button key={key} onClick={() => { onOpenRefer(); onClose(); }} style={topItemStyle}>
+          🎁 Refer & Earn
+        </button>
+      );
+    }
+    if (key === "buy-coins") {
+      return (
+        <button key={key} onClick={() => { onOpenBuyCoins(); onClose(); }} style={topItemStyle}>
+          🪙 Buy Coins
+        </button>
+      );
+    }
+    if (key === "notes") {
+      return (
+        <div key={key}>
+          <button
+            onClick={() => setOpenNotesFolder(!openNotesFolder)}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}
+          >
+            <span>📚 Notes</span>
+            <span style={{ color: COLORS.inkSoft, fontSize: 13 }}>{openNotesFolder ? "▾" : "▸"}</span>
+          </button>
+
+          {openNotesFolder && Object.keys(catalog || {}).map((medium) => (
+            <div key={medium}>
+              <button
+                onClick={() => { setOpenMedium(openMedium === medium ? null : medium); setOpenBranch(null); }}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: "10px 14px 10px 28px", fontFamily: "'Kalam', cursive", fontSize: 15, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}
+              >
+                <span>{medium}</span>
+                <span style={{ color: COLORS.inkSoft, fontSize: 12 }}>{openMedium === medium ? "▾" : "▸"}</span>
+              </button>
+
+              {openMedium === medium && ["school", "entrance"].map((branch) => (
+                <div key={branch}>
+                  <button
+                    onClick={() => setOpenBranch(openBranch === branch ? null : branch)}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: "9px 14px 9px 42px", fontFamily: "'Work Sans', sans-serif", fontSize: 14, fontWeight: 600, color: COLORS.ink, cursor: "pointer" }}
+                  >
+                    <span>{branch === "school" ? "School" : "Entrance Exam"}</span>
+                    <span style={{ color: COLORS.inkSoft, fontSize: 12 }}>{openBranch === branch ? "▾" : "▸"}</span>
+                  </button>
+                  {openBranch === branch && Object.keys(catalog[medium]?.[branch] || {}).map((key) => (
+                    <button
+                      key={key}
+                      onClick={() => { onPickKey(medium, branch, key); onClose(); }}
+                      style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "8px 14px 8px 56px", fontFamily: "'Work Sans', sans-serif", fontSize: 13.5, color: COLORS.inkSoft, cursor: "pointer" }}
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return null;
+  }
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", justifyContent: "flex-end" }}>
@@ -640,63 +761,11 @@ function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onO
         </div>
 
         <div style={{ padding: "10px 6px 30px" }}>
-          <button onClick={() => { onHome(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
+          <button onClick={() => { onHome(); onClose(); }} style={topItemStyle}>
             🏠 Home
           </button>
 
-          <button onClick={() => { onOpenMessages(); onClose(); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
-            <span>💬 Message Admin</span>
-            {unreadMessages > 0 && (
-              <span style={{ background: COLORS.stampRed, color: "#fff", borderRadius: 999, minWidth: 20, height: 20, fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
-                {unreadMessages}
-              </span>
-            )}
-          </button>
-
-          <button onClick={() => { onOpenLoginHistory(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
-            📅 Login History
-          </button>
-
-          <button onClick={() => { onOpenRefer(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
-            🎁 Refer & Earn
-          </button>
-
-          <button onClick={() => { onOpenBuyCoins(); onClose(); }} style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}>
-            🪙 Buy Coins
-          </button>
-
-          {Object.keys(catalog || {}).map((medium) => (
-            <div key={medium}>
-              <button
-                onClick={() => { setOpenMedium(openMedium === medium ? null : medium); setOpenBranch(null); }}
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}
-              >
-                <span>{medium}</span>
-                <span style={{ color: COLORS.inkSoft, fontSize: 13 }}>{openMedium === medium ? "▾" : "▸"}</span>
-              </button>
-
-              {openMedium === medium && ["school", "entrance"].map((branch) => (
-                <div key={branch}>
-                  <button
-                    onClick={() => setOpenBranch(openBranch === branch ? null : branch)}
-                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: "9px 14px 9px 28px", fontFamily: "'Work Sans', sans-serif", fontSize: 14.5, fontWeight: 600, color: COLORS.ink, cursor: "pointer" }}
-                  >
-                    <span>{branch === "school" ? "School" : "Entrance Exam"}</span>
-                    <span style={{ color: COLORS.inkSoft, fontSize: 12 }}>{openBranch === branch ? "▾" : "▸"}</span>
-                  </button>
-                  {openBranch === branch && Object.keys(catalog[medium]?.[branch] || {}).map((key) => (
-                    <button
-                      key={key}
-                      onClick={() => { onPickKey(medium, branch, key); onClose(); }}
-                      style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "8px 14px 8px 42px", fontFamily: "'Work Sans', sans-serif", fontSize: 13.5, color: COLORS.inkSoft, cursor: "pointer" }}
-                    >
-                      {key}
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </div>
-          ))}
+          {menuOrder.map((key) => renderItem(key))}
 
           {isAdmin && (
             <button
@@ -749,6 +818,7 @@ export default function NextGenNotes() {
   const [view, setView] = useState("store"); // "store" | "admin" | "login-history" | "messages"
   const [notes, setNotes] = useState([]);
   const [catalog, setCatalog] = useState(null); // { "Hindi Medium": {school:{}, entrance:{}}, "English Medium": {...} }
+  const [menuOrder, setMenuOrder] = useState(DEFAULT_MENU_ORDER);
   const [profile, setProfile] = useState(null); // { id, coins, referred_by, current_streak, last_login_date, full_name, username, created_at }
   const [referOpen, setReferOpen] = useState(false);
   const [buyCoinsOpen, setBuyCoinsOpen] = useState(false);
@@ -786,6 +856,11 @@ export default function NextGenNotes() {
   async function loadCatalog() {
     const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "catalog").single();
     setCatalog(!error && data ? data.data || {} : {});
+  }
+
+  async function loadMenuOrder() {
+    const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "menu_order").single();
+    setMenuOrder(!error && data?.data?.order ? normalizeMenuOrder(data.data.order) : DEFAULT_MENU_ORDER);
   }
 
   function checkAndOpenDailyBonus(data) {
@@ -881,6 +956,7 @@ export default function NextGenNotes() {
     if (session) {
       loadNotes();
       loadCatalog();
+      loadMenuOrder();
       loadProfile();
       loadUnreadMessages(session.user.id);
     }
@@ -971,6 +1047,7 @@ export default function NextGenNotes() {
         onOpenMessages={() => setView("messages")}
         unreadMessages={unreadMessages}
         catalog={catalog}
+        menuOrder={menuOrder}
       />
 
       <ReferModal
@@ -983,7 +1060,7 @@ export default function NextGenNotes() {
       <BuyCoinsModal
         open={buyCoinsOpen}
         onClose={() => setBuyCoinsOpen(false)}
-        userEmail={session.user.email}
+        onRequestSent={() => { setBuyCoinsOpen(false); setView("messages"); }}
       />
 
       <OnboardingModal

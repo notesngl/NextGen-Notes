@@ -3,22 +3,24 @@ import { supabase } from "./supabaseClient";
 import { COLORS, FONTS } from "./siteConfig";
 
 /*
-  Admin Panel — four tabs:
+  Admin Panel — five tabs:
     1. Notes      — add/edit/delete notes
     2. Menu       — add/rename/delete School/Entrance -> Class/Exam ->
-                    Subject -> Chapter, under each Medium.
+                    Subject -> Chapter (under each Medium), PLUS a
+                    "Menu Order" section to reorder the ☰ menu items
+                    students see (Message Admin / Login History /
+                    Refer & Earn / Buy Coins / Notes folder).
     3. Add Coins  — credit coins to any student by their Google account
-                    email (used for manual WhatsApp "Buy Coins" payments).
+                    email (used after a student requests coins via DM).
     4. Messages   — Instagram-style DM inbox: every student who has
                     messaged shows up with their username, tap opens the
                     full chat, reply box sends a message back.
+    5. Students   — every student who has ever signed in, with a serial
+                    number, name, username, and a total count.
 
-  Menu data lives in Supabase table "site_catalog", single row with
-  id='catalog', shape:
-    {
-      "Hindi Medium":   { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} },
-      "English Medium": { "school": {...}, "entrance": {...} }
-    }
+  Menu data lives in Supabase table "site_catalog":
+    - id='catalog'    -> { "Hindi Medium": { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} }, "English Medium": {...} }
+    - id='menu_order' -> { "order": ["messages","login-history","refer","buy-coins","notes"] }
   See catalog_migration_v2.sql for the one-time table setup.
 
   Only reachable from App.jsx if the signed-in user's email matches
@@ -38,8 +40,22 @@ import { COLORS, FONTS } from "./siteConfig";
 
   Messages tab calls admin_list_threads() / admin_get_thread(student_id)
   / admin_send_message(student_id, content) — all security definer,
-  all check the caller is ADMIN_EMAIL.
+  all check the caller is ADMIN_EMAIL. Buy Coins requests from students
+  arrive here as regular messages.
+
+  Students tab calls admin_list_students() — security definer, admin
+  only, returns every profiles row ordered by signup time.
 */
+
+// Keep this in sync with MENU_ITEM_KEYS in App.jsx
+const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes"];
+const MENU_ITEM_LABELS = {
+  messages: "💬 Message Admin",
+  "login-history": "📅 Login History",
+  refer: "🎁 Refer & Earn",
+  "buy-coins": "🪙 Buy Coins",
+  notes: "📚 Notes (Hindi/English Medium)",
+};
 
 function field(label, children) {
   return (
@@ -293,7 +309,68 @@ function NotesTab() {
   );
 }
 
-/* ---------- Tab 2: Manage Menu ---------- */
+/* ---------- Tab 2: Manage Menu (catalog + menu order) ---------- */
+
+function MenuOrderEditor() {
+  const [order, setOrder] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function load() {
+    setLoading(true);
+    const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "menu_order").single();
+    const stored = !error && data?.data?.order ? data.data.order : [];
+    const cleaned = stored.filter((k) => MENU_ITEM_KEYS.includes(k));
+    const missing = MENU_ITEM_KEYS.filter((k) => !cleaned.includes(k));
+    setOrder([...cleaned, ...missing]);
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+
+  async function save(newOrder) {
+    setSaving(true);
+    setMsg("");
+    const { error } = await supabase
+      .from("site_catalog")
+      .update({ data: { order: newOrder } })
+      .eq("id", "menu_order");
+    if (error) setMsg("Error: " + error.message);
+    else { setOrder(newOrder); setMsg("Order save ho gaya ✓"); }
+    setSaving(false);
+  }
+
+  function move(idx, dir) {
+    const j = idx + dir;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[idx], next[j]] = [next[j], next[idx]];
+    save(next);
+  }
+
+  return (
+    <div style={{ marginBottom: 32 }}>
+      <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 18, margin: "0 0 6px" }}>Menu Order</h3>
+      <p style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>
+        Yahan se ☰ menu mein in items ka order set karein (upar wala item menu mein sabse upar dikhega). "Home" hamesha sabse upar aur "Admin Panel" hamesha sabse neeche rahega.
+      </p>
+      {loading || !order ? (
+        <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
+      ) : (
+        <div style={{ display: "grid", gap: 6 }}>
+          {order.map((key, idx) => (
+            <div key={key} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ ...btnStyle, flex: 1, cursor: "default" }}>{MENU_ITEM_LABELS[key]}</span>
+              <button onClick={() => move(idx, -1)} disabled={idx === 0 || saving} style={{ ...smallLink, color: COLORS.ink, fontSize: 16 }}>↑</button>
+              <button onClick={() => move(idx, 1)} disabled={idx === order.length - 1 || saving} style={{ ...smallLink, color: COLORS.ink, fontSize: 16 }}>↓</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {msg && <p style={{ fontSize: 12.5, color: msg.startsWith("Error") ? COLORS.stampRed : COLORS.ink, marginTop: 10 }}>{msg}</p>}
+    </div>
+  );
+}
 
 function ManageMenuTab() {
   const [medium, setMedium] = useState("Hindi Medium");
@@ -419,6 +496,8 @@ function ManageMenuTab() {
       <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
         Yahan se website ke ☰ menu mein Class/Exam, Subject aur Chapter add/rename/delete kar sakte ho — code chhoone ki zaroorat nahi.
       </p>
+
+      <MenuOrderEditor />
 
       {loading || !data ? (
         <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
@@ -552,7 +631,7 @@ function AddCoinsTab() {
       <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Add Coins</h2>
       <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
         Student ke Google account email daalein aur kitne coins add karne hain — turant unke account mein credit ho jayenge.
-        Student ne pehle site pe kam se kam ek baar Google se sign-in kiya hua hona chahiye.
+        Student ne pehle site pe kam se kam ek baar Google se sign-in kiya hua hona chahiye. Buy Coins requests "Messages" tab me DM ke through aati hain.
       </p>
 
       <form onSubmit={handleSubmit} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "18px 16px" }}>
@@ -711,7 +790,7 @@ function MessagesTab() {
     <section style={{ maxWidth: 640, margin: "0 auto", padding: "32px 20px 60px" }}>
       <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Messages</h2>
       <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
-        Students ke messages yahan aate hain. Kisi bhi thread par tap karke poori chat dekhein aur reply karein.
+        Students ke messages yahan aate hain (Buy Coins requests bhi). Kisi bhi thread par tap karke poori chat dekhein aur reply karein.
       </p>
 
       {loadingThreads ? (
@@ -757,10 +836,70 @@ function MessagesTab() {
   );
 }
 
+/* ---------- Tab 5: Students ---------- */
+
+function StudentsTab() {
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const { data, error } = await supabase.rpc("admin_list_students");
+      if (!error && data) setStudents(data);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  return (
+    <section style={{ maxWidth: 640, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Students</h2>
+      <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 4 }}>
+        Google se sign-in kiye hue sabhi students ki list, join karne ke order mein.
+      </p>
+      <p style={{ fontSize: 14, fontWeight: 700, color: COLORS.margin, marginBottom: 16 }}>
+        Total Students: {loading ? "..." : students.length}
+      </p>
+
+      {loading ? (
+        <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
+      ) : students.length === 0 ? (
+        <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Abhi tak koi sign-in nahi hua.</p>
+      ) : (
+        <div style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, overflow: "hidden" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "44px 1fr 1fr", background: COLORS.paperDark, padding: "9px 12px", fontSize: 12, fontWeight: 700, color: COLORS.inkSoft }}>
+            <span>Sr.</span>
+            <span>Name</span>
+            <span>Username</span>
+          </div>
+          {students.map((s, idx) => (
+            <div
+              key={s.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "44px 1fr 1fr",
+                padding: "10px 12px",
+                fontSize: 13.5,
+                borderTop: `1px solid ${COLORS.paperDark}`,
+                color: COLORS.ink,
+              }}
+            >
+              <span style={{ color: COLORS.inkSoft }}>{idx + 1}</span>
+              <span>{s.full_name || "—"}</span>
+              <span>{s.username ? `@${s.username}` : "—"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ---------- Shell with tab switcher ---------- */
 
 export default function AdminPanel({ onBack }) {
-  const [tab, setTab] = useState("notes"); // "notes" | "menu" | "coins" | "messages"
+  const [tab, setTab] = useState("notes"); // "notes" | "menu" | "coins" | "messages" | "students"
 
   return (
     <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink }}>
@@ -777,12 +916,14 @@ export default function AdminPanel({ onBack }) {
         <button onClick={() => setTab("menu")} style={tab === "menu" ? btnActiveStyle : btnStyle}>📂 Manage Menu</button>
         <button onClick={() => setTab("coins")} style={tab === "coins" ? btnActiveStyle : btnStyle}>🪙 Add Coins</button>
         <button onClick={() => setTab("messages")} style={tab === "messages" ? btnActiveStyle : btnStyle}>📩 Messages</button>
+        <button onClick={() => setTab("students")} style={tab === "students" ? btnActiveStyle : btnStyle}>🎓 Students</button>
       </div>
 
       {tab === "notes" && <NotesTab />}
       {tab === "menu" && <ManageMenuTab />}
       {tab === "coins" && <AddCoinsTab />}
       {tab === "messages" && <MessagesTab />}
+      {tab === "students" && <StudentsTab />}
     </div>
   );
 }
