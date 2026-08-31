@@ -3,30 +3,36 @@ import { supabase } from "./supabaseClient";
 import { COLORS, FONTS } from "./siteConfig";
 
 /*
-  Admin Panel — six tabs:
-    1. Notes      — add/edit/delete notes
-    2. Menu       — add/rename/delete School/Entrance -> Class/Exam ->
-                    Subject -> Chapter (under each Medium), PLUS reorder
-                    arrows at every level (Medium, Class/Exam, Subject,
-                    Chapter) and a "Menu Order" section for the ☰ menu
-                    items themselves.
-    3. Add Coins  — credit coins to any student by their Google account
-                    email (used after a student requests coins via DM
-                    or sends a payment screenshot).
-    4. Messages   — Instagram-style DM inbox: every student who has
-                    messaged shows up with their username, tap opens the
-                    full chat (text + images), reply box sends back.
-    5. Students   — every student who has ever signed in, with a serial
-                    number, name, username, and a total count.
-    6. Settings   — payment QR code image + UPI ID (shown to students in
-                    Buy Coins) and contact Email/WhatsApp/Instagram
-                    (shown in the student-side Contact modal).
+  Admin Panel — seven tabs:
+    1. Notes              — add/edit/delete PDF notes
+    2. Objective Qs        — add/edit/delete in-page MCQ sets (Objective
+                             Questions), typed as plain text and parsed
+                             into structured questions
+    3. Menu                — add/rename/delete/reorder School/Entrance ->
+                             Class/Exam -> Subject -> Chapter, for EITHER
+                             the Notes catalog or the Objective Questions
+                             catalog (switch at the top), PLUS a
+                             "Menu Order" section for the ☰ menu items.
+    4. Add Coins           — credit coins to a student by email
+    5. Messages             — DM inbox (text + images)
+    6. Students             — everyone who has signed in, serial numbered
+    7. Settings             — payment QR/UPI, contact info, and every
+                             coin amount used across the site
 
   Menu data lives in Supabase table "site_catalog":
-    - id='catalog'    -> { "Hindi Medium": { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} }, "English Medium": {...} }
-    - id='menu_order' -> { "order": ["messages","login-history","refer","buy-coins","notes","contact"] }
-    - id='settings'   -> { upi_id, qr_image_url, contact_email, contact_whatsapp, contact_instagram }
+    - id='catalog'            -> Notes catalog: { "Hindi Medium": { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} }, "English Medium": {...} }
+    - id='catalog_objective'  -> same shape, for Objective Questions
+    - id='menu_order'         -> { "order": [...] }
+    - id='settings'           -> { upi_id, qr_image_url, contact_email,
+                                    contact_whatsapp, contact_instagram,
+                                    unlock_cost, daily_bonus, streak_bonus,
+                                    welcome_bonus, referral_bonus }
   See catalog_migration_v2.sql for the one-time table setup.
+
+  Objective Questions live in their own table "objective_questions":
+    id, category, key, medium, subject, chapter, title, description,
+    questions (jsonb array of {question, options[], answer_index}),
+    full_pdf_link, created_at.
 
   Reordering Medium/Class-Exam/Subject just rewrites the JSON object's
   key order (JS objects preserve insertion order for string keys, and so
@@ -36,34 +42,28 @@ import { COLORS, FONTS } from "./siteConfig";
   Only reachable from App.jsx if the signed-in user's email matches
   ADMIN_EMAIL in siteConfig.js.
 
-  "notes" table needs these columns:
-    id, category, key, medium, subject, chapter, title, description,
-    pages, file_url, full_pdf_link, whatsapp_link, created_at
+  Add Coins tab calls admin_add_coins(target_email, amount) — security
+  definer, admin only. Messages tab calls admin_list_threads() /
+  admin_get_thread(student_id) / admin_send_message(student_id, content,
+  image_url) — all security definer, admin only. Images are uploaded to
+  the public "app-uploads" Storage bucket. Students tab calls
+  admin_list_students() — security definer, admin only.
 
-  Add Coins tab calls the admin_add_coins(target_email, amount) Postgres
-  function (security definer, checks the caller is ADMIN_EMAIL).
-
-  Messages tab calls admin_list_threads() / admin_get_thread(student_id)
-  / admin_send_message(student_id, content, image_url) — all security
-  definer, all check the caller is ADMIN_EMAIL. Images (from students or
-  admin) are uploaded to the public "app-uploads" Storage bucket.
-
-  Students tab calls admin_list_students() — security definer, admin
-  only, returns every profiles row ordered by signup time.
-
-  Settings tab uploads the QR image to "app-uploads" Storage and saves
-  the resulting public URL, plus the other fields, into the
-  site_catalog id='settings' row.
+  All coin amounts (unlock cost, daily/streak/welcome/referral bonuses)
+  are stored in the settings row and read server-side by the
+  register_profile and claim_daily_login_bonus Postgres functions — no
+  code change needed to retune them, just Settings -> Coins -> Save.
 */
 
 // Keep this in sync with MENU_ITEM_KEYS in App.jsx
-const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes", "contact"];
+const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes", "objective", "contact"];
 const MENU_ITEM_LABELS = {
   messages: "💬 Message Admin",
   "login-history": "📅 Login History",
   refer: "🎁 Refer & Earn",
   "buy-coins": "🪙 Buy Coins",
   notes: "📚 Notes (Hindi/English Medium)",
+  objective: "❓ Objective Questions (Hindi/English Medium)",
   contact: "📞 Contact",
 };
 
@@ -320,7 +320,227 @@ function NotesTab() {
   );
 }
 
-/* ---------- Tab 2: Manage Menu (catalog + menu order) ---------- */
+/* ---------- Tab 2: Objective Questions ---------- */
+
+function parseQuestionsInput(text) {
+  const blocks = text.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
+  return blocks
+    .map((block) => {
+      const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+      const qLine = lines.find((l) => /^q[:.]/i.test(l)) || lines[0] || "";
+      const question = qLine.replace(/^q[:.]\s*/i, "");
+      const options = lines.filter((l) => /^[a-dA-D][).]/.test(l)).map((l) => l.replace(/^[a-dA-D][).]\s*/, ""));
+      const ansLine = lines.find((l) => /^answer[:.]/i.test(l));
+      const answerLetter = ansLine ? ansLine.replace(/^answer[:.]\s*/i, "").trim().toUpperCase() : "";
+      const answer_index = "ABCD".indexOf(answerLetter);
+      return { question, options, answer_index };
+    })
+    .filter((q) => q.question && q.options.length > 0);
+}
+
+const OBJECTIVE_FORMAT_HELP = `Har question is format mein likhein, do questions ke beech ek khaali line chhodein:
+
+Q: Bharat ki rajdhani kya hai?
+A) Mumbai
+B) Delhi
+C) Chennai
+D) Kolkata
+Answer: B`;
+
+function ObjectiveTab() {
+  const [catalog, setCatalog] = useState({});
+  const [form, setForm] = useState({ medium: "", category: "school", key: "", subject: "", chapter: "", title: "", description: "", questionsText: "", fullPdfLink: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [existing, setExisting] = useState([]);
+
+  const { medium, category, key, subject, chapter, title, description, questionsText, fullPdfLink } = form;
+  function set(fieldName, value) {
+    setForm((f) => ({ ...f, [fieldName]: value }));
+  }
+
+  const mediumOptions = Object.keys(catalog);
+  const keyOptions = medium ? Object.keys(catalog[medium]?.[category] || {}) : [];
+  const subjectOptions = medium && key ? Object.keys(catalog[medium]?.[category]?.[key] || {}) : [];
+  const chapterOptions = medium && key && subject ? (catalog[medium]?.[category]?.[key]?.[subject] || []) : [];
+
+  async function loadCatalog() {
+    const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "catalog_objective").single();
+    setCatalog(!error && data ? data.data || {} : {});
+  }
+
+  async function loadExisting() {
+    const { data, error } = await supabase.from("objective_questions").select("*").order("created_at", { ascending: false });
+    if (!error && data) setExisting(data);
+  }
+  useEffect(() => { loadExisting(); loadCatalog(); }, []);
+
+  function startEdit(item) {
+    setEditingId(item.id);
+    const qText = (item.questions || [])
+      .map((q) => `Q: ${q.question}\n${(q.options || []).map((o, i) => `${String.fromCharCode(65 + i)}) ${o}`).join("\n")}\nAnswer: ${String.fromCharCode(65 + (q.answer_index ?? 0))}`)
+      .join("\n\n");
+    setForm({
+      medium: item.medium,
+      category: item.category,
+      key: item.key,
+      subject: item.subject,
+      chapter: item.chapter,
+      title: item.title,
+      description: item.description || "",
+      questionsText: qText,
+      fullPdfLink: item.full_pdf_link || "",
+    });
+    setMessage("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setForm({ medium: "", category: "school", key: "", subject: "", chapter: "", title: "", description: "", questionsText: "", fullPdfLink: "" });
+    setMessage("");
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setMessage("");
+    if (!medium || !key || !subject || !chapter || !title.trim()) {
+      setMessage("Sab fields zaroori hain.");
+      return;
+    }
+    const questions = parseQuestionsInput(questionsText);
+    if (questions.length === 0) {
+      setMessage("Kam se kam ek valid question chahiye — neeche diya format follow karein.");
+      return;
+    }
+    setSaving(true);
+    const payload = {
+      category, key, medium, subject, chapter,
+      title: title.trim(),
+      description: description.trim(),
+      questions,
+      full_pdf_link: fullPdfLink.trim() || null,
+    };
+    try {
+      if (editingId) {
+        const { error } = await supabase.from("objective_questions").update(payload).eq("id", editingId);
+        if (error) throw error;
+        setMessage("Update ho gaya ✓");
+      } else {
+        const { error } = await supabase.from("objective_questions").insert(payload);
+        if (error) throw error;
+        setMessage(`${questions.length} questions add ho gaye ✓`);
+      }
+      setEditingId(null);
+      setForm({ medium: "", category: "school", key: "", subject: "", chapter: "", title: "", description: "", questionsText: "", fullPdfLink: "" });
+      loadExisting();
+    } catch (err) {
+      setMessage("Error: " + err.message);
+    }
+    setSaving(false);
+  }
+
+  async function handleDelete(item) {
+    if (!window.confirm(`Delete "${item.title}"?`)) return;
+    await supabase.from("objective_questions").delete().eq("id", item.id);
+    if (editingId === item.id) cancelEdit();
+    loadExisting();
+  }
+
+  return (
+    <section style={{ maxWidth: 560, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>
+        {editingId ? "Edit Objective Questions" : "Add Objective Questions"}
+      </h2>
+      <p style={{ fontSize: 12, color: COLORS.inkSoft, marginBottom: 16 }}>
+        Class/Exam/Subject/Chapter "Manage Menu" tab mein "❓ Objective Questions" switch karke add karein.
+      </p>
+
+      <form onSubmit={handleSubmit} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "18px 16px" }}>
+        {field("Medium", (
+          <select value={medium} onChange={(e) => set("medium", e.target.value)} style={inputStyle}>
+            <option value="">Select</option>
+            {mediumOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        ))}
+        {field("Category", (
+          <select value={category} onChange={(e) => set("category", e.target.value)} style={inputStyle} disabled={!medium}>
+            <option value="school">School</option>
+            <option value="entrance">Entrance Exam</option>
+          </select>
+        ))}
+        {field(category === "school" ? "Class" : "Exam", (
+          <select value={key} onChange={(e) => set("key", e.target.value)} style={inputStyle} disabled={!medium}>
+            <option value="">Select</option>
+            {keyOptions.map((k) => <option key={k} value={k}>{k}</option>)}
+          </select>
+        ))}
+        {field("Subject", (
+          <select value={subject} onChange={(e) => set("subject", e.target.value)} style={inputStyle} disabled={!key}>
+            <option value="">Select</option>
+            {subjectOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        ))}
+        {field("Chapter", (
+          <select value={chapter} onChange={(e) => set("chapter", e.target.value)} style={inputStyle} disabled={!subject}>
+            <option value="">Select</option>
+            {chapterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        ))}
+        {field("Title", (
+          <input value={title} onChange={(e) => set("title", e.target.value)} style={inputStyle} placeholder="e.g. Chapter 3 — MCQs" />
+        ))}
+        {field("Description (optional)", (
+          <textarea value={description} onChange={(e) => set("description", e.target.value)} style={{ ...inputStyle, minHeight: 50, resize: "vertical" }} />
+        ))}
+        {field("Questions", (
+          <textarea value={questionsText} onChange={(e) => set("questionsText", e.target.value)} style={{ ...inputStyle, minHeight: 180, resize: "vertical", fontFamily: "monospace", fontSize: 13 }} placeholder={OBJECTIVE_FORMAT_HELP} />
+        ))}
+        <p style={{ fontSize: 11.5, color: COLORS.inkSoft, marginTop: -8, marginBottom: 14, whiteSpace: "pre-line" }}>{OBJECTIVE_FORMAT_HELP}</p>
+
+        {field("Full PDF Google Drive link (coins se unlock hoga, optional)", (
+          <input value={fullPdfLink} onChange={(e) => set("fullPdfLink", e.target.value)} style={inputStyle} placeholder="https://drive.google.com/file/d/..." />
+        ))}
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            type="submit"
+            disabled={saving}
+            style={{ flex: 1, background: COLORS.margin, color: COLORS.paper, border: "none", borderRadius: 6, padding: "12px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Kalam', cursive" }}
+          >
+            {saving ? "Saving..." : editingId ? "Update" : "Add"}
+          </button>
+          {editingId && (
+            <button type="button" onClick={cancelEdit} style={{ background: "none", border: `1.5px solid ${COLORS.inkSoft}55`, color: COLORS.ink, borderRadius: 6, padding: "12px 16px", fontSize: 14, cursor: "pointer" }}>
+              Cancel
+            </button>
+          )}
+        </div>
+        {message && <p style={{ fontSize: 13, color: message.startsWith("Error") ? COLORS.stampRed : COLORS.ink, marginTop: 10 }}>{message}</p>}
+      </form>
+
+      <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 19, margin: "32px 0 12px" }}>Uploaded ({existing.length})</h3>
+      <div style={{ display: "grid", gap: 8 }}>
+        {existing.map((n) => (
+          <div key={n.id} style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 6, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div>
+              <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600 }}>{n.title} <span style={{ color: COLORS.inkSoft, fontWeight: 400 }}>({(n.questions || []).length} Qs)</span></p>
+              <p style={{ margin: 0, fontSize: 11.5, color: COLORS.inkSoft }}>{n.medium} · {n.key} · {n.subject} · {n.chapter}</p>
+            </div>
+            <div style={{ display: "flex", gap: 12, flexShrink: 0 }}>
+              <button onClick={() => startEdit(n)} style={{ background: "none", border: "none", color: COLORS.ink, fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>Edit</button>
+              <button onClick={() => handleDelete(n)} style={{ background: "none", border: "none", color: COLORS.stampRed, fontSize: 12.5, cursor: "pointer" }}>Delete</button>
+            </div>
+          </div>
+        ))}
+        {existing.length === 0 && <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Abhi tak kuch add nahi hua.</p>}
+      </div>
+    </section>
+  );
+}
+
+/* ---------- Tab 3: Manage Menu (catalog + menu order) ---------- */
 
 function MenuOrderEditor() {
   const [order, setOrder] = useState(null);
@@ -384,6 +604,7 @@ function MenuOrderEditor() {
 }
 
 function ManageMenuTab() {
+  const [catalogTarget, setCatalogTarget] = useState("catalog"); // "catalog" (Notes) | "catalog_objective" (Objective Questions)
   const [medium, setMedium] = useState("Hindi Medium");
   const [category, setCategory] = useState("school");
   const [data, setData] = useState(null); // full catalog blob
@@ -400,11 +621,11 @@ function ManageMenuTab() {
 
   async function load() {
     setLoading(true);
-    const { data: row, error } = await supabase.from("site_catalog").select("data").eq("id", "catalog").single();
+    const { data: row, error } = await supabase.from("site_catalog").select("data").eq("id", catalogTarget).single();
     setData(!error && row ? row.data || {} : {});
     setLoading(false);
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); setSelectedKey(null); setSelectedSubject(null); }, [catalogTarget]);
 
   useEffect(() => { setSelectedKey(null); setSelectedSubject(null); }, [medium, category]);
 
@@ -426,7 +647,7 @@ function ManageMenuTab() {
   async function save(updated) {
     setSaving(true);
     setMsg("");
-    const { error } = await supabase.from("site_catalog").update({ data: updated }).eq("id", "catalog");
+    const { error } = await supabase.from("site_catalog").update({ data: updated }).eq("id", catalogTarget);
     if (error) setMsg("Error: " + error.message);
     else { setData(updated); setMsg("Saved ✓"); }
     setSaving(false);
@@ -545,6 +766,11 @@ function ManageMenuTab() {
 
       <MenuOrderEditor />
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+        <button onClick={() => setCatalogTarget("catalog")} style={catalogTarget === "catalog" ? btnActiveStyle : btnStyle}>📚 Notes</button>
+        <button onClick={() => setCatalogTarget("catalog_objective")} style={catalogTarget === "catalog_objective" ? btnActiveStyle : btnStyle}>❓ Objective Questions</button>
+      </div>
+
       {loading || !data ? (
         <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Loading...</p>
       ) : (
@@ -649,7 +875,7 @@ function ManageMenuTab() {
   );
 }
 
-/* ---------- Tab 3: Add Coins ---------- */
+/* ---------- Tab 4: Add Coins ---------- */
 
 function AddCoinsTab() {
   const [email, setEmail] = useState("");
@@ -719,7 +945,7 @@ function AddCoinsTab() {
   );
 }
 
-/* ---------- Tab 4: Messages (Instagram-style inbox, with images) ---------- */
+/* ---------- Tab 5: Messages (Instagram-style inbox, with images) ---------- */
 
 function MessagesTab() {
   const [threads, setThreads] = useState([]);
@@ -930,7 +1156,7 @@ function MessagesTab() {
   );
 }
 
-/* ---------- Tab 5: Students ---------- */
+/* ---------- Tab 6: Students ---------- */
 
 function StudentsTab() {
   const [students, setStudents] = useState([]);
@@ -990,10 +1216,13 @@ function StudentsTab() {
   );
 }
 
-/* ---------- Tab 6: Settings (payment QR/UPI + contact info) ---------- */
+/* ---------- Tab 7: Settings (payment QR/UPI + contact + coin amounts) ---------- */
 
 function SettingsTab() {
-  const [form, setForm] = useState({ upi_id: "", qr_image_url: "", contact_email: "", contact_whatsapp: "", contact_instagram: "" });
+  const [form, setForm] = useState({
+    upi_id: "", qr_image_url: "", contact_email: "", contact_whatsapp: "", contact_instagram: "",
+    unlock_cost: 10, daily_bonus: 1, streak_bonus: 9, welcome_bonus: 5, referral_bonus: 30,
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploadingQr, setUploadingQr] = useState(false);
@@ -1029,10 +1258,18 @@ function SettingsTab() {
   async function handleSave() {
     setSaving(true);
     setMsg("");
-    const { error } = await supabase.from("site_catalog").update({ data: form }).eq("id", "settings");
+    const payload = {
+      ...form,
+      unlock_cost: parseInt(form.unlock_cost, 10) || 0,
+      daily_bonus: parseInt(form.daily_bonus, 10) || 0,
+      streak_bonus: parseInt(form.streak_bonus, 10) || 0,
+      welcome_bonus: parseInt(form.welcome_bonus, 10) || 0,
+      referral_bonus: parseInt(form.referral_bonus, 10) || 0,
+    };
+    const { error } = await supabase.from("site_catalog").update({ data: payload }).eq("id", "settings");
     setSaving(false);
     if (error) setMsg("Error: " + error.message);
-    else setMsg("Settings save ho gayi ✓");
+    else { setForm(payload); setMsg("Settings save ho gayi ✓"); }
   }
 
   if (loading) {
@@ -1047,7 +1284,7 @@ function SettingsTab() {
     <section style={{ maxWidth: 480, margin: "0 auto", padding: "32px 20px 60px" }}>
       <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, marginBottom: 6 }}>Settings</h2>
       <p style={{ fontSize: 13, color: COLORS.inkSoft, marginBottom: 18 }}>
-        Payment QR/UPI (Buy Coins mein students ko dikhega) aur contact details (Contact modal mein students ko dikhenge).
+        Payment QR/UPI, contact details, aur website ke saare coin amounts — sab yahin se control hote hain, code chhoone ki zaroorat nahi.
       </p>
 
       <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 17, margin: "0 0 10px" }}>Payment</h3>
@@ -1070,6 +1307,25 @@ function SettingsTab() {
         ))}
         {field("UPI ID", (
           <input value={form.upi_id} onChange={(e) => set("upi_id", e.target.value)} style={inputStyle} placeholder="yourname@upi" />
+        ))}
+      </div>
+
+      <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 17, margin: "0 0 10px" }}>Coins</h3>
+      <div style={{ background: COLORS.paper, border: `1px solid ${COLORS.paperDark}`, borderRadius: 8, padding: "16px", marginBottom: 24 }}>
+        {field("Full PDF unlock cost (coins)", (
+          <input type="number" value={form.unlock_cost} onChange={(e) => set("unlock_cost", e.target.value)} style={inputStyle} />
+        ))}
+        {field("Daily login bonus (coins)", (
+          <input type="number" value={form.daily_bonus} onChange={(e) => set("daily_bonus", e.target.value)} style={inputStyle} />
+        ))}
+        {field("7-day streak bonus (coins)", (
+          <input type="number" value={form.streak_bonus} onChange={(e) => set("streak_bonus", e.target.value)} style={inputStyle} />
+        ))}
+        {field("Welcome bonus for referred user (coins)", (
+          <input type="number" value={form.welcome_bonus} onChange={(e) => set("welcome_bonus", e.target.value)} style={inputStyle} />
+        ))}
+        {field("Referral bonus for referrer (coins)", (
+          <input type="number" value={form.referral_bonus} onChange={(e) => set("referral_bonus", e.target.value)} style={inputStyle} />
         ))}
       </div>
 
@@ -1101,7 +1357,7 @@ function SettingsTab() {
 /* ---------- Shell with tab switcher ---------- */
 
 export default function AdminPanel({ onBack }) {
-  const [tab, setTab] = useState("notes"); // "notes" | "menu" | "coins" | "messages" | "students" | "settings"
+  const [tab, setTab] = useState("notes"); // "notes" | "objective" | "menu" | "coins" | "messages" | "students" | "settings"
 
   return (
     <div style={{ minHeight: "100vh", background: COLORS.paperDark, fontFamily: "'Work Sans', sans-serif", color: COLORS.ink }}>
@@ -1115,6 +1371,7 @@ export default function AdminPanel({ onBack }) {
 
       <div style={{ display: "flex", gap: 8, maxWidth: 700, margin: "20px auto 0", padding: "0 20px", flexWrap: "wrap" }}>
         <button onClick={() => setTab("notes")} style={tab === "notes" ? btnActiveStyle : btnStyle}>📝 Notes</button>
+        <button onClick={() => setTab("objective")} style={tab === "objective" ? btnActiveStyle : btnStyle}>❓ Objective Qs</button>
         <button onClick={() => setTab("menu")} style={tab === "menu" ? btnActiveStyle : btnStyle}>📂 Manage Menu</button>
         <button onClick={() => setTab("coins")} style={tab === "coins" ? btnActiveStyle : btnStyle}>🪙 Add Coins</button>
         <button onClick={() => setTab("messages")} style={tab === "messages" ? btnActiveStyle : btnStyle}>📩 Messages</button>
@@ -1123,6 +1380,7 @@ export default function AdminPanel({ onBack }) {
       </div>
 
       {tab === "notes" && <NotesTab />}
+      {tab === "objective" && <ObjectiveTab />}
       {tab === "menu" && <ManageMenuTab />}
       {tab === "coins" && <AddCoinsTab />}
       {tab === "messages" && <MessagesTab />}

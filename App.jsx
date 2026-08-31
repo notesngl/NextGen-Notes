@@ -14,12 +14,24 @@ import AdminPanel from "./AdminPanel";
       "Hindi Medium":   { "school": { "Class 6": { Subject: [Chapters] } }, "entrance": {...} },
       "English Medium": { "school": {...}, "entrance": {...} }
     }
-  Edited entirely from the Admin Panel -> Manage Menu tab, which now also
+  Edited entirely from the Admin Panel -> Manage Menu tab, which also
   lets admin reorder Mediums, Classes/Exams, and Subjects (not just
   Chapters) — reordering just rewrites the JSON object's key order, which
   Object.keys() here picks up automatically. In the ☰ menu this sits
   inside a collapsible "📚 Notes" folder.
   See catalog_migration_v2.sql for the one-time table setup.
+
+  OBJECTIVE QUESTIONS
+  - Same Medium -> School/Entrance -> Class/Exam -> Subject -> Chapter
+    structure, but its own catalog row: site_catalog id='catalog_objective'.
+  - Its own table "objective_questions": id, category, key, medium,
+    subject, chapter, title, description, questions (jsonb array of
+    {question, options[], answer_index}), full_pdf_link, created_at.
+  - Rendered in-page via ObjectiveViewer (no PDF/iframe) — students read
+    MCQs directly on the site. An optional full_pdf_link can still be
+    unlocked with coins, same mechanism as Notes' full_pdf_link.
+  - Reachable from the ☰ menu under "❓ Objective Questions", a sibling
+    folder to "📚 Notes".
 
   MENU ORDER
   - Another row in site_catalog, id='menu_order', data = { order: [...] }
@@ -30,11 +42,16 @@ import AdminPanel from "./AdminPanel";
     time via normalizeMenuOrder() so old saved orders don't break when
     new menu items are added later.
 
-  SETTINGS (payment + contact info)
+  SETTINGS (payment + contact + coin amounts)
   - Another row in site_catalog, id='settings', data = { upi_id,
-    qr_image_url, contact_email, contact_whatsapp, contact_instagram }.
-    Edited from Admin Panel -> Settings. qr_image_url and any DM
-    screenshots are uploaded to the public "app-uploads" Storage bucket.
+    qr_image_url, contact_email, contact_whatsapp, contact_instagram,
+    unlock_cost, daily_bonus, streak_bonus, welcome_bonus,
+    referral_bonus }. All admin-editable from Admin Panel -> Settings —
+    no code changes needed to retune any coin amount. DEFAULT_COIN_COST
+    here is only a client-side fallback for the instant before settings
+    finish loading; welcome_bonus/referral_bonus/daily_bonus/streak_bonus
+    are read server-side inside the register_profile and
+    claim_daily_login_bonus Postgres functions.
 
   PROFILE ONBOARDING
   - "profiles" table also has full_name and username (unique, case-
@@ -46,36 +63,40 @@ import AdminPanel from "./AdminPanel";
   - "profiles" table: id (=auth user id), coins, referred_by,
     last_login_date, current_streak, full_name, username, created_at.
   - Signing in calls register_profile(referrer_id) RPC once, then (once
-    onboarding is done) a daily login bonus popup: +1 coin normally, +9
-    on the 7th continuous day (claim_daily_login_bonus RPC), recorded in
-    "login_history".
-  - Each note can optionally have a "full_pdf_link" unlocked for
-    COIN_COST coins via the redeem_note RPC.
+    onboarding is done) a daily login bonus popup (claim_daily_login_bonus
+    RPC), recorded in "login_history". Amounts come from the settings row
+    server-side.
+  - Each note (or objective-questions item) can optionally have a
+    "full_pdf_link" unlocked for settings.unlock_cost coins via the
+    redeem_note RPC (works for both tables — the RPC just needs the row
+    id and cost, it doesn't care which table the id came from as long as
+    it's a notes.id; for objective_questions we still call redeem_note
+    with the item's id since the RPC only debits coins from the caller
+    and doesn't touch notes/objective_questions rows itself — the coin
+    debit is what matters, the link-opening happens client-side).
   - Buy Coins has NO WhatsApp and no automatic payment gateway: tapping
-    a package shows the admin's QR code + UPI ID for that amount, then
-    the student is taken to Message Admin to send a payment screenshot
-    (DM now supports images). Admin manually verifies and credits coins
-    via Admin Panel -> Add Coins, typically within 24 hours.
+    a package shows the admin's QR code + UPI ID, then the student is
+    taken to Message Admin to send a payment screenshot. Admin manually
+    credits coins via Admin Panel -> Add Coins.
   - Login History page (from the ☰ menu) lists login_history rows.
 
   MESSAGE ADMIN (DM) + CONTACT
   - "messages" table: id, student_id, sender_role ('student'|'admin'),
     content, image_url, created_at, read_by_admin, read_by_student.
   - Student side (MessageAdminPage): reads own thread via RLS, sends
-    text and/or images via send_message_to_admin RPC (images uploaded
-    to the "app-uploads" Storage bucket first, public URL passed as
-    p_image_url), marks read via mark_thread_read_student RPC, and
-    subscribes to Realtime for live incoming admin replies.
+    text and/or images via send_message_to_admin RPC, marks read via
+    mark_thread_read_student RPC, subscribes to Realtime for live
+    incoming admin replies.
   - "📞 Contact" menu item shows a modal with the admin's email,
     WhatsApp, and Instagram (from the settings row) as tappable links.
   - Admin side lives in AdminPanel.jsx (Messages / Students / Settings
     tabs).
-  See the SQL setup (profiles/messages/site_catalog rows + Storage
-  bucket + all RPC functions + realtime publication) — run once in the
-  Supabase SQL editor.
+  See the SQL setup (profiles/messages/objective_questions/site_catalog
+  rows + Storage bucket + all RPC functions + realtime publication) —
+  run once in the Supabase SQL editor.
 */
 
-const COIN_COST = 10; // coins required to unlock one note's full PDF
+const DEFAULT_COIN_COST = 10; // fallback if admin hasn't set a custom unlock cost yet
 
 const COIN_PACKAGES = [
   { coins: 5, price: 5 },
@@ -89,7 +110,7 @@ const COIN_PACKAGES = [
 const USERNAME_REGEX = /^[a-z0-9_]{3,20}$/;
 
 // Reorderable ☰ menu items (Home is always first, Admin Panel always last/admin-only)
-const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes", "contact"];
+const MENU_ITEM_KEYS = ["messages", "login-history", "refer", "buy-coins", "notes", "objective", "contact"];
 const DEFAULT_MENU_ORDER = [...MENU_ITEM_KEYS];
 
 function normalizeMenuOrder(order) {
@@ -168,7 +189,7 @@ function toEmbedUrl(url) {
 }
 
 /* PDF opens inline on the page */
-function PdfViewer({ note, profile, onRedeem }) {
+function PdfViewer({ note, profile, onRedeem, coinCost }) {
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
       <RuledCard style={{ padding: "16px 14px" }}>
@@ -220,7 +241,93 @@ function PdfViewer({ note, profile, onRedeem }) {
               fontFamily: "'Kalam', cursive",
             }}
           >
-            🪙 Coins Se Kholein ({COIN_COST} coins — Full PDF Free){profile ? ` · Aapke paas: ${profile.coins}` : ""}
+            🪙 Coins Se Kholein ({coinCost} coins — Full PDF Free){profile ? ` · Aapke paas: ${profile.coins}` : ""}
+          </button>
+        )}
+      </RuledCard>
+      <TornEdge />
+    </div>
+  );
+}
+
+/* Objective Questions viewer — shown instead of PdfViewer for chapters
+   under the "Objective Questions" folder. Questions/options/answers are
+   read straight off the page (no PDF); an optional full_pdf_link can
+   still be unlocked with coins, same as Notes. */
+function ObjectiveViewer({ item, profile, onRedeem, coinCost }) {
+  const [revealed, setRevealed] = useState({});
+
+  function toggleAnswer(idx) {
+    setRevealed((r) => ({ ...r, [idx]: !r[idx] }));
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <RuledCard style={{ padding: "16px 14px" }}>
+        <h4 style={{ fontFamily: "'Kalam', cursive", fontSize: 18, fontWeight: 700, margin: "0 0 4px", color: COLORS.ink }}>
+          {item.title}
+        </h4>
+        {item.description && <p style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>{item.description}</p>}
+
+        <div style={{ display: "grid", gap: 14 }}>
+          {(item.questions || []).map((q, idx) => (
+            <div key={idx} style={{ borderTop: idx > 0 ? `1px dashed ${COLORS.paperDark}` : "none", paddingTop: idx > 0 ? 12 : 0 }}>
+              <p style={{ fontSize: 14.5, fontWeight: 600, margin: "0 0 8px" }}>{idx + 1}. {q.question}</p>
+              <div style={{ display: "grid", gap: 5 }}>
+                {(q.options || []).map((opt, oIdx) => {
+                  const isAnswer = oIdx === q.answer_index;
+                  const showColor = revealed[idx] && isAnswer;
+                  return (
+                    <p
+                      key={oIdx}
+                      style={{
+                        margin: 0,
+                        fontSize: 13.5,
+                        padding: "5px 10px",
+                        borderRadius: 5,
+                        background: showColor ? "#e6f7ec" : "transparent",
+                        color: showColor ? "#1a7a3c" : COLORS.ink,
+                        fontWeight: showColor ? 700 : 400,
+                      }}
+                    >
+                      {String.fromCharCode(65 + oIdx)}) {opt}
+                    </p>
+                  );
+                })}
+              </div>
+              <button
+                onClick={() => toggleAnswer(idx)}
+                style={{ marginTop: 6, background: "none", border: "none", color: COLORS.margin, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0, textDecoration: "underline" }}
+              >
+                {revealed[idx] ? "Answer chhupayein" : "Answer dekhein"}
+              </button>
+            </div>
+          ))}
+          {(!item.questions || item.questions.length === 0) && (
+            <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Is chapter ke liye abhi questions add nahi hue.</p>
+          )}
+        </div>
+
+        {item.full_pdf_link && (
+          <button
+            onClick={() => onRedeem(item)}
+            style={{
+              display: "block",
+              width: "100%",
+              textAlign: "center",
+              marginTop: 16,
+              background: COLORS.gold,
+              color: COLORS.ink,
+              border: "none",
+              borderRadius: 6,
+              padding: "11px 16px",
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "'Kalam', cursive",
+            }}
+          >
+            🪙 Coins Se PDF Kholein ({coinCost} coins){profile ? ` · Aapke paas: ${profile.coins}` : ""}
           </button>
         )}
       </RuledCard>
@@ -305,7 +412,7 @@ function ReferModal({ open, onClose, coins, refLink }) {
       <div style={{ position: "relative", background: COLORS.paper, borderRadius: 10, padding: "24px 20px", maxWidth: 380, width: "100%" }}>
         <h3 style={{ fontFamily: "'Kalam', cursive", fontSize: 20, margin: "0 0 8px" }}>Refer & Earn 🪙</h3>
         <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 14 }}>
-          Apna link doston ko bhejo. Wo is link se sign up karega to aapko 30 coins milenge, aur use 5 coins welcome bonus milega.
+          Apna link doston ko bhejo. Wo is link se sign up karega to aapko coins milenge, aur use welcome bonus milega.
         </p>
         <p style={{ fontSize: 13, marginBottom: 14 }}>Aapke coins: <b>{coins}</b></p>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
@@ -501,7 +608,7 @@ function DailyBonusModal({ open, onClose, previewDay, previewBonus, claiming, cl
             <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginBottom: 18 }}>
               {previewBonus >= 9
                 ? "🎉 Aaj 7th continuous din hai — bada bonus milega!"
-                : "Roz login karke coins kamayein. 7th continuous din +9 coins!"}
+                : "Roz login karke coins kamayein. 7th continuous din bada bonus!"}
             </p>
             <button
               onClick={onClaim}
@@ -567,7 +674,7 @@ function LoginHistoryPage({ onBack, profile }) {
             Din {profile?.current_streak ?? 0} / 7
           </p>
           <p style={{ fontSize: 12.5, color: COLORS.inkSoft, marginTop: 6 }}>
-            Roz login karke bonus claim karo — +1 coin, 7th continuous din +9 coins. Ek din miss hua to streak Din 1 se shuru hoga.
+            Roz login karke bonus claim karo. Ek din miss hua to streak Din 1 se shuru hoga.
           </p>
         </RuledCard>
 
@@ -776,14 +883,18 @@ function MessageAdminPage({ onBack, session }) {
 }
 
 /* Menu: Home -> reorderable items (Message Admin / Login History /
-   Refer & Earn / Buy Coins / Notes folder / Contact) -> Admin Panel
-   (admin only, always last). The Notes folder holds Medium -> School/
-   Entrance -> Class/Exam -> Subject -> Chapter, built live from the
-   "catalog" prop, in whatever key order the admin has set. */
-function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, onOpenMessages, onOpenContact, unreadMessages, catalog, menuOrder }) {
+   Refer & Earn / Buy Coins / Notes folder / Objective Questions folder /
+   Contact) -> Admin Panel (admin only, always last). The Notes and
+   Objective Questions folders hold Medium -> School/Entrance -> Class/
+   Exam -> Subject -> Chapter, built live from their respective catalog
+   props, in whatever key order the admin has set. */
+function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onOpenLoginHistory, onOpenRefer, onOpenBuyCoins, onOpenMessages, onOpenContact, unreadMessages, catalog, catalogObjective, menuOrder }) {
   const [openNotesFolder, setOpenNotesFolder] = useState(false);
   const [openMedium, setOpenMedium] = useState(null);
   const [openBranch, setOpenBranch] = useState(null);
+  const [openObjectiveFolder, setOpenObjectiveFolder] = useState(false);
+  const [openMediumObj, setOpenMediumObj] = useState(null);
+  const [openBranchObj, setOpenBranchObj] = useState(null);
 
   if (!open) return null;
 
@@ -863,7 +974,53 @@ function NavDrawer({ open, onClose, onHome, onPickKey, isAdmin, onOpenAdmin, onO
                   {openBranch === branch && Object.keys(catalog[medium]?.[branch] || {}).map((key) => (
                     <button
                       key={key}
-                      onClick={() => { onPickKey(medium, branch, key); onClose(); }}
+                      onClick={() => { onPickKey(medium, branch, key, "notes"); onClose(); }}
+                      style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "8px 14px 8px 56px", fontFamily: "'Work Sans', sans-serif", fontSize: 13.5, color: COLORS.inkSoft, cursor: "pointer" }}
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      );
+    }
+    if (key === "objective") {
+      return (
+        <div key={key}>
+          <button
+            onClick={() => setOpenObjectiveFolder(!openObjectiveFolder)}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: "12px 14px", fontFamily: "'Kalam', cursive", fontSize: 16.5, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}
+          >
+            <span>❓ Objective Questions</span>
+            <span style={{ color: COLORS.inkSoft, fontSize: 13 }}>{openObjectiveFolder ? "▾" : "▸"}</span>
+          </button>
+
+          {openObjectiveFolder && Object.keys(catalogObjective || {}).map((medium) => (
+            <div key={medium}>
+              <button
+                onClick={() => { setOpenMediumObj(openMediumObj === medium ? null : medium); setOpenBranchObj(null); }}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: "10px 14px 10px 28px", fontFamily: "'Kalam', cursive", fontSize: 15, fontWeight: 700, color: COLORS.ink, cursor: "pointer" }}
+              >
+                <span>{medium}</span>
+                <span style={{ color: COLORS.inkSoft, fontSize: 12 }}>{openMediumObj === medium ? "▾" : "▸"}</span>
+              </button>
+
+              {openMediumObj === medium && ["school", "entrance"].map((branch) => (
+                <div key={branch}>
+                  <button
+                    onClick={() => setOpenBranchObj(openBranchObj === branch ? null : branch)}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "none", border: "none", padding: "9px 14px 9px 42px", fontFamily: "'Work Sans', sans-serif", fontSize: 14, fontWeight: 600, color: COLORS.ink, cursor: "pointer" }}
+                  >
+                    <span>{branch === "school" ? "School" : "Entrance Exam"}</span>
+                    <span style={{ color: COLORS.inkSoft, fontSize: 12 }}>{openBranchObj === branch ? "▾" : "▸"}</span>
+                  </button>
+                  {openBranchObj === branch && Object.keys(catalogObjective[medium]?.[branch] || {}).map((key) => (
+                    <button
+                      key={key}
+                      onClick={() => { onPickKey(medium, branch, key, "objective"); onClose(); }}
                       style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", padding: "8px 14px 8px 56px", fontFamily: "'Work Sans', sans-serif", fontSize: 13.5, color: COLORS.inkSoft, cursor: "pointer" }}
                     >
                       {key}
@@ -942,12 +1099,14 @@ function LoginScreen() {
 export default function NextGenNotes() {
   const [session, setSession] = useState(undefined);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [nav, setNav] = useState(null); // { medium, category, key, subject, chapter }
+  const [nav, setNav] = useState(null); // { medium, category, key, subject, chapter, section }
   const [view, setView] = useState("store"); // "store" | "admin" | "login-history" | "messages"
   const [notes, setNotes] = useState([]);
   const [catalog, setCatalog] = useState(null); // { "Hindi Medium": {school:{}, entrance:{}}, "English Medium": {...} }
+  const [objectiveQuestions, setObjectiveQuestions] = useState([]);
+  const [catalogObjective, setCatalogObjective] = useState(null);
   const [menuOrder, setMenuOrder] = useState(DEFAULT_MENU_ORDER);
-  const [settings, setSettings] = useState(null); // { upi_id, qr_image_url, contact_email, contact_whatsapp, contact_instagram }
+  const [settings, setSettings] = useState(null); // { upi_id, qr_image_url, contact_email, contact_whatsapp, contact_instagram, unlock_cost, daily_bonus, streak_bonus, welcome_bonus, referral_bonus }
   const [profile, setProfile] = useState(null); // { id, coins, referred_by, current_streak, last_login_date, full_name, username, created_at }
   const [referOpen, setReferOpen] = useState(false);
   const [buyCoinsOpen, setBuyCoinsOpen] = useState(false);
@@ -986,6 +1145,16 @@ export default function NextGenNotes() {
   async function loadCatalog() {
     const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "catalog").single();
     setCatalog(!error && data ? data.data || {} : {});
+  }
+
+  async function loadObjectiveQuestions() {
+    const { data, error } = await supabase.from("objective_questions").select("*");
+    if (!error && data) setObjectiveQuestions(data);
+  }
+
+  async function loadCatalogObjective() {
+    const { data, error } = await supabase.from("site_catalog").select("data").eq("id", "catalog_objective").single();
+    setCatalogObjective(!error && data ? data.data || {} : {});
   }
 
   async function loadMenuOrder() {
@@ -1083,7 +1252,7 @@ export default function NextGenNotes() {
     y.setDate(y.getDate() - 1);
     const yesterdayStr = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
     const nextDay = last === yesterdayStr ? streak + 1 : 1;
-    const nextBonus = nextDay >= 7 ? 9 : 1;
+    const nextBonus = nextDay >= 7 ? (settings?.streak_bonus ?? 9) : (settings?.daily_bonus ?? 1);
     return { nextDay, nextBonus };
   }
 
@@ -1091,6 +1260,8 @@ export default function NextGenNotes() {
     if (session) {
       loadNotes();
       loadCatalog();
+      loadObjectiveQuestions();
+      loadCatalogObjective();
       loadMenuOrder();
       loadSettings();
       loadProfile();
@@ -1100,12 +1271,13 @@ export default function NextGenNotes() {
 
   async function handleRedeem(note) {
     if (!profile) return;
-    if (profile.coins < COIN_COST) {
-      alert(`Aapke paas sirf ${profile.coins} coins hain. ${COIN_COST} coins chahiye. Refer karke, roz login bonus claim karke, ya Buy Coins se coins kamayein!`);
+    const cost = settings?.unlock_cost || DEFAULT_COIN_COST;
+    if (profile.coins < cost) {
+      alert(`Aapke paas sirf ${profile.coins} coins hain. ${cost} coins chahiye. Refer karke, roz login bonus claim karke, ya Buy Coins se coins kamayein!`);
       setReferOpen(true);
       return;
     }
-    const { data, error } = await supabase.rpc("redeem_note", { p_note_id: note.id, p_cost: COIN_COST });
+    const { data, error } = await supabase.rpc("redeem_note", { p_note_id: note.id, p_cost: cost });
     if (error) {
       alert("Kuch error hua: " + error.message);
       return;
@@ -1114,7 +1286,7 @@ export default function NextGenNotes() {
     window.open(note.full_pdf_link, "_blank", "noopener,noreferrer");
   }
 
-  if (session === undefined || (session && catalog === null)) {
+  if (session === undefined || (session && (catalog === null || catalogObjective === null))) {
     return (
       <div style={{ minHeight: "100vh", background: COLORS.paperDark, display: "flex", alignItems: "center", justifyContent: "center", color: COLORS.inkSoft, fontFamily: "'Work Sans', sans-serif" }}>
         <style>{FONTS}</style>Loading...
@@ -1137,11 +1309,16 @@ export default function NextGenNotes() {
     return <MessageAdminPage onBack={() => setView("store")} session={session} />;
   }
 
-  const subjectsObj = nav?.key ? catalog?.[nav.medium]?.[nav.category]?.[nav.key] : null;
+  const activeCatalog = nav?.section === "objective" ? catalogObjective : catalog;
+  const subjectsObj = nav?.key ? activeCatalog?.[nav.medium]?.[nav.category]?.[nav.key] : null;
   const branchLabel = (b) => (b === "school" ? "School" : "Entrance Exam");
 
   function findNotes(category, key, medium, subject, chapter) {
     return notes.filter((n) => n.category === category && n.key === key && n.medium === medium && n.subject === subject && n.chapter === chapter);
+  }
+
+  function findObjectiveQuestions(category, key, medium, subject, chapter) {
+    return objectiveQuestions.filter((n) => n.category === category && n.key === key && n.medium === medium && n.subject === subject && n.chapter === chapter);
   }
 
   const { nextDay, nextBonus } = dailyBonusPreview();
@@ -1174,7 +1351,7 @@ export default function NextGenNotes() {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         onHome={() => setNav(null)}
-        onPickKey={(medium, category, key) => setNav({ medium, category, key, subject: null, chapter: null })}
+        onPickKey={(medium, category, key, section) => setNav({ medium, category, key, subject: null, chapter: null, section })}
         isAdmin={isAdmin}
         onOpenAdmin={() => setView("admin")}
         onOpenLoginHistory={() => setView("login-history")}
@@ -1184,6 +1361,7 @@ export default function NextGenNotes() {
         onOpenContact={() => setContactOpen(true)}
         unreadMessages={unreadMessages}
         catalog={catalog}
+        catalogObjective={catalogObjective}
         menuOrder={menuOrder}
       />
 
@@ -1294,10 +1472,21 @@ export default function NextGenNotes() {
           </p>
           <h2 style={{ fontFamily: "'Kalam', cursive", fontSize: 22, margin: "0 0 18px", color: COLORS.ink }}>{nav.chapter}</h2>
           {(() => {
+            const coinCost = settings?.unlock_cost || DEFAULT_COIN_COST;
+            if (nav.section === "objective") {
+              const items = findObjectiveQuestions(nav.category, nav.key, nav.medium, nav.subject, nav.chapter);
+              return items.length > 0 ? (
+                <div style={{ display: "grid", gap: 20 }}>
+                  {items.map((it) => <ObjectiveViewer key={it.id} item={it} profile={profile} onRedeem={handleRedeem} coinCost={coinCost} />)}
+                </div>
+              ) : (
+                <AvailableSoon />
+              );
+            }
             const chapterNotes = findNotes(nav.category, nav.key, nav.medium, nav.subject, nav.chapter);
             return chapterNotes.length > 0 ? (
               <div style={{ display: "grid", gap: 20 }}>
-                {chapterNotes.map((n) => <PdfViewer key={n.id} note={n} profile={profile} onRedeem={handleRedeem} />)}
+                {chapterNotes.map((n) => <PdfViewer key={n.id} note={n} profile={profile} onRedeem={handleRedeem} coinCost={coinCost} />)}
               </div>
             ) : (
               <AvailableSoon />
