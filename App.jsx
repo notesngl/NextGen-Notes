@@ -24,12 +24,19 @@ import AdminPanel from "./AdminPanel";
   OBJECTIVE QUESTIONS
   - Same Medium -> School/Entrance -> Class/Exam -> Subject -> Chapter
     structure, but its own catalog row: site_catalog id='catalog_objective'.
+    IMPORTANT: this is a SEPARATE catalog from Notes — Admin Panel ->
+    Manage Menu has a "📚 Notes" / "❓ Objective Questions" switch at the
+    top; Class/Subject/Chapter must be added while that switch is on
+    "❓ Objective Questions" for them to show up here.
   - Its own table "objective_questions": id, category, key, medium,
     subject, chapter, title, description, questions (jsonb array of
-    {question, options[], answer_index}), full_pdf_link, created_at.
-  - Rendered in-page via ObjectiveViewer (no PDF/iframe) — students read
-    MCQs directly on the site. An optional full_pdf_link can still be
-    unlocked with coins, same mechanism as Notes' full_pdf_link.
+    either {question, answer_text} for a plain Q&A, or {question,
+    options[], answer_index} for an MCQ), full_pdf_link, created_at.
+  - Rendered in-page via ObjectiveViewer (no PDF/iframe) — the question
+    and its answer are both always visible, styled in different colors
+    (no PDF, no tap-to-reveal). MCQ items (with options) show all
+    options with the correct one highlighted. An optional full_pdf_link
+    can still be unlocked with coins, same as Notes' full_pdf_link.
   - Reachable from the ☰ menu under "❓ Objective Questions", a sibling
     folder to "📚 Notes".
 
@@ -68,12 +75,7 @@ import AdminPanel from "./AdminPanel";
     server-side.
   - Each note (or objective-questions item) can optionally have a
     "full_pdf_link" unlocked for settings.unlock_cost coins via the
-    redeem_note RPC (works for both tables — the RPC just needs the row
-    id and cost, it doesn't care which table the id came from as long as
-    it's a notes.id; for objective_questions we still call redeem_note
-    with the item's id since the RPC only debits coins from the caller
-    and doesn't touch notes/objective_questions rows itself — the coin
-    debit is what matters, the link-opening happens client-side).
+    redeem_note RPC.
   - Buy Coins has NO WhatsApp and no automatic payment gateway: tapping
     a package shows the admin's QR code + UPI ID, then the student is
     taken to Message Admin to send a payment screenshot. Admin manually
@@ -251,16 +253,13 @@ function PdfViewer({ note, profile, onRedeem, coinCost }) {
 }
 
 /* Objective Questions viewer — shown instead of PdfViewer for chapters
-   under the "Objective Questions" folder. Questions/options/answers are
-   read straight off the page (no PDF); an optional full_pdf_link can
-   still be unlocked with coins, same as Notes. */
+   under the "Objective Questions" folder. Question and answer are both
+   always visible, styled in different colors — no PDF, no reveal
+   button. Supports two question shapes:
+     - Plain: { question, answer_text }
+     - MCQ:   { question, options: [...], answer_index }
+   An optional full_pdf_link can still be unlocked with coins. */
 function ObjectiveViewer({ item, profile, onRedeem, coinCost }) {
-  const [revealed, setRevealed] = useState({});
-
-  function toggleAnswer(idx) {
-    setRevealed((r) => ({ ...r, [idx]: !r[idx] }));
-  }
-
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
       <RuledCard style={{ padding: "16px 14px" }}>
@@ -270,39 +269,54 @@ function ObjectiveViewer({ item, profile, onRedeem, coinCost }) {
         {item.description && <p style={{ fontSize: 12.5, color: COLORS.inkSoft, marginBottom: 12 }}>{item.description}</p>}
 
         <div style={{ display: "grid", gap: 14 }}>
-          {(item.questions || []).map((q, idx) => (
-            <div key={idx} style={{ borderTop: idx > 0 ? `1px dashed ${COLORS.paperDark}` : "none", paddingTop: idx > 0 ? 12 : 0 }}>
-              <p style={{ fontSize: 14.5, fontWeight: 600, margin: "0 0 8px" }}>{idx + 1}. {q.question}</p>
-              <div style={{ display: "grid", gap: 5 }}>
-                {(q.options || []).map((opt, oIdx) => {
-                  const isAnswer = oIdx === q.answer_index;
-                  const showColor = revealed[idx] && isAnswer;
-                  return (
-                    <p
-                      key={oIdx}
-                      style={{
-                        margin: 0,
-                        fontSize: 13.5,
-                        padding: "5px 10px",
-                        borderRadius: 5,
-                        background: showColor ? "#e6f7ec" : "transparent",
-                        color: showColor ? "#1a7a3c" : COLORS.ink,
-                        fontWeight: showColor ? 700 : 400,
-                      }}
-                    >
-                      {String.fromCharCode(65 + oIdx)}) {opt}
-                    </p>
-                  );
-                })}
+          {(item.questions || []).map((q, idx) => {
+            const isMcq = Array.isArray(q.options) && q.options.length > 0;
+            return (
+              <div key={idx} style={{ borderTop: idx > 0 ? `1px dashed ${COLORS.paperDark}` : "none", paddingTop: idx > 0 ? 12 : 0 }}>
+                <p style={{ fontSize: 14.5, fontWeight: 700, margin: "0 0 8px", color: COLORS.margin }}>
+                  {idx + 1}. {q.question}
+                </p>
+
+                {isMcq ? (
+                  <div style={{ display: "grid", gap: 5 }}>
+                    {q.options.map((opt, oIdx) => {
+                      const isAnswer = oIdx === q.answer_index;
+                      return (
+                        <p
+                          key={oIdx}
+                          style={{
+                            margin: 0,
+                            fontSize: 13.5,
+                            padding: "5px 10px",
+                            borderRadius: 5,
+                            background: isAnswer ? "#e6f7ec" : "transparent",
+                            color: isAnswer ? "#1a7a3c" : COLORS.ink,
+                            fontWeight: isAnswer ? 700 : 400,
+                          }}
+                        >
+                          {String.fromCharCode(65 + oIdx)}) {opt}
+                        </p>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: 14,
+                      padding: "8px 12px",
+                      borderRadius: 6,
+                      background: "#e6f7ec",
+                      color: "#1a7a3c",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Answer: {q.answer_text}
+                  </p>
+                )}
               </div>
-              <button
-                onClick={() => toggleAnswer(idx)}
-                style={{ marginTop: 6, background: "none", border: "none", color: COLORS.margin, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0, textDecoration: "underline" }}
-              >
-                {revealed[idx] ? "Answer chhupayein" : "Answer dekhein"}
-              </button>
-            </div>
-          ))}
+            );
+          })}
           {(!item.questions || item.questions.length === 0) && (
             <p style={{ fontSize: 13, color: COLORS.inkSoft }}>Is chapter ke liye abhi questions add nahi hue.</p>
           )}

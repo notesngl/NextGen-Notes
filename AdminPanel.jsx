@@ -5,9 +5,21 @@ import { COLORS, FONTS } from "./siteConfig";
 /*
   Admin Panel — seven tabs:
     1. Notes              — add/edit/delete PDF notes
-    2. Objective Qs        — add/edit/delete in-page MCQ sets (Objective
+    2. Objective Qs        — add/edit/delete in-page Q&A sets (Objective
                              Questions), typed as plain text and parsed
-                             into structured questions
+                             into structured questions. Two supported
+                             formats per question:
+                               - Plain Q&A: "Q: ...\nAnswer: ..." (no
+                                 options) — shown on the site as question
+                                 + answer, both always visible, in
+                                 different colors.
+                               - MCQ: "Q: ...\nA) ...\nB) ...\nC) ...
+                                 \nD) ...\nAnswer: B" — shown with all
+                                 options, correct one highlighted.
+                             IMPORTANT: Class/Subject/Chapter for these
+                             must be added via the "Menu" tab with the
+                             "❓ Objective Questions" catalog switch ON —
+                             they live in a separate catalog from Notes.
     3. Menu                — add/rename/delete/reorder School/Entrance ->
                              Class/Exam -> Subject -> Chapter, for EITHER
                              the Notes catalog or the Objective Questions
@@ -31,8 +43,9 @@ import { COLORS, FONTS } from "./siteConfig";
 
   Objective Questions live in their own table "objective_questions":
     id, category, key, medium, subject, chapter, title, description,
-    questions (jsonb array of {question, options[], answer_index}),
-    full_pdf_link, created_at.
+    questions (jsonb array of EITHER {question, answer_text} for a plain
+    Q&A OR {question, options[], answer_index} for an MCQ), full_pdf_link,
+    created_at.
 
   Reordering Medium/Class-Exam/Subject just rewrites the JSON object's
   key order (JS objects preserve insertion order for string keys, and so
@@ -322,6 +335,10 @@ function NotesTab() {
 
 /* ---------- Tab 2: Objective Questions ---------- */
 
+// Parses freeform question text into structured questions.
+// Each block (separated by a blank line) becomes one question.
+// If the block has A)/B)/C)/D) option lines -> MCQ shape.
+// Otherwise -> plain Q&A shape (just question + answer_text).
 function parseQuestionsInput(text) {
   const blocks = text.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
   return blocks
@@ -331,15 +348,24 @@ function parseQuestionsInput(text) {
       const question = qLine.replace(/^q[:.]\s*/i, "");
       const options = lines.filter((l) => /^[a-dA-D][).]/.test(l)).map((l) => l.replace(/^[a-dA-D][).]\s*/, ""));
       const ansLine = lines.find((l) => /^answer[:.]/i.test(l));
-      const answerLetter = ansLine ? ansLine.replace(/^answer[:.]\s*/i, "").trim().toUpperCase() : "";
-      const answer_index = "ABCD".indexOf(answerLetter);
-      return { question, options, answer_index };
+      const answerRaw = ansLine ? ansLine.replace(/^answer[:.]\s*/i, "").trim() : "";
+
+      if (options.length > 0) {
+        const answer_index = "ABCD".indexOf(answerRaw.toUpperCase());
+        return { question, options, answer_index };
+      }
+      return { question, answer_text: answerRaw };
     })
-    .filter((q) => q.question && q.options.length > 0);
+    .filter((q) => q.question && (q.options ? q.options.length > 0 : q.answer_text));
 }
 
 const OBJECTIVE_FORMAT_HELP = `Har question is format mein likhein, do questions ke beech ek khaali line chhodein:
 
+Simple Q&A (recommended):
+Q: Bharat ki rajdhani kya hai?
+Answer: Delhi
+
+MCQ bhi bana sakte ho (options ke saath):
 Q: Bharat ki rajdhani kya hai?
 A) Mumbai
 B) Delhi
@@ -376,11 +402,21 @@ function ObjectiveTab() {
   }
   useEffect(() => { loadExisting(); loadCatalog(); }, []);
 
+  // Rebuild the freeform textarea from stored questions (used by Edit)
+  function questionsToText(questions) {
+    return (questions || [])
+      .map((q) => {
+        if (q.options && q.options.length > 0) {
+          const opts = q.options.map((o, i) => `${String.fromCharCode(65 + i)}) ${o}`).join("\n");
+          return `Q: ${q.question}\n${opts}\nAnswer: ${String.fromCharCode(65 + (q.answer_index ?? 0))}`;
+        }
+        return `Q: ${q.question}\nAnswer: ${q.answer_text || ""}`;
+      })
+      .join("\n\n");
+  }
+
   function startEdit(item) {
     setEditingId(item.id);
-    const qText = (item.questions || [])
-      .map((q) => `Q: ${q.question}\n${(q.options || []).map((o, i) => `${String.fromCharCode(65 + i)}) ${o}`).join("\n")}\nAnswer: ${String.fromCharCode(65 + (q.answer_index ?? 0))}`)
-      .join("\n\n");
     setForm({
       medium: item.medium,
       category: item.category,
@@ -389,7 +425,7 @@ function ObjectiveTab() {
       chapter: item.chapter,
       title: item.title,
       description: item.description || "",
-      questionsText: qText,
+      questionsText: questionsToText(item.questions),
       fullPdfLink: item.full_pdf_link || "",
     });
     setMessage("");
@@ -488,8 +524,13 @@ function ObjectiveTab() {
             {chapterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         ))}
+        {(key && subject && chapterOptions.length === 0) && (
+          <p style={{ fontSize: 12, color: COLORS.stampRed, marginTop: -8, marginBottom: 14 }}>
+            Is subject mein abhi koi chapter nahi hai — pehle "Manage Menu" tab (Objective Questions switch on karke) se chapter add karein.
+          </p>
+        )}
         {field("Title", (
-          <input value={title} onChange={(e) => set("title", e.target.value)} style={inputStyle} placeholder="e.g. Chapter 3 — MCQs" />
+          <input value={title} onChange={(e) => set("title", e.target.value)} style={inputStyle} placeholder="e.g. Chapter 3 — Questions" />
         ))}
         {field("Description (optional)", (
           <textarea value={description} onChange={(e) => set("description", e.target.value)} style={{ ...inputStyle, minHeight: 50, resize: "vertical" }} />
@@ -766,6 +807,9 @@ function ManageMenuTab() {
 
       <MenuOrderEditor />
 
+      <p style={{ fontSize: 13, fontWeight: 700, color: COLORS.stampRed, marginBottom: 6 }}>
+        Neeche jo bhi add karein, wo isi switch ke catalog mein jayega:
+      </p>
       <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
         <button onClick={() => setCatalogTarget("catalog")} style={catalogTarget === "catalog" ? btnActiveStyle : btnStyle}>📚 Notes</button>
         <button onClick={() => setCatalogTarget("catalog_objective")} style={catalogTarget === "catalog_objective" ? btnActiveStyle : btnStyle}>❓ Objective Questions</button>
